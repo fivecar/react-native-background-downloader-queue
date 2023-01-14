@@ -1,7 +1,7 @@
 {
-  "name": "my-package",
+  "name": "react-native-background-download-queue",
   "version": "0.0.0-development",
-  "description": "A template for creating npm packages using TypeScript and VSCode",
+  "description": "A wifi-aware background downloader that maintains a queue of files",
   "main": "./lib/index.js",
   "files": [
     "lib/**/*"
@@ -19,7 +19,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fivecar/my-package.git"
+    "url": "git+https://github.com/fivecar/react-native-background-download-queue.git"
   },
   "license": "MIT",
   "author": {
@@ -34,9 +34,9 @@
     "stuff"
   ],
   "bugs": {
-    "url": "https://github.com/fivecar/my-package/issues"
+    "url": "https://github.com/fivecar/react-native-background-download-queue/issues"
   },
-  "homepage": "https://github.com/fivecar/my-package#readme",
+  "homepage": "https://github.com/fivecar/react-native-background-download-queue#readme",
   "devDependencies": {
     "@ryansonshine/commitizen": "^4.2.8",
     "@ryansonshine/cz-conventional-changelog": "^3.3.4",
