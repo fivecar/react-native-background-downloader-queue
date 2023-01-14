@@ -10,6 +10,13 @@
 
 ## Install
 
+First install peer dependencies:
+* react-native-background-downloader [using these instructions](https://github.com/kesha-antonov/react-native-background-downloader#readme)
+* react-native-fs [using these instructions](https://github.com/itinance/react-native-fs#readme)
+* @react-native-async-storage/async-storage [using these instructions](https://github.com/react-native-async-storage/async-storage#readme)
+
+Once those are done, install this package:
+
 ```bash
 npm install react-native-background-download-queue
 ```

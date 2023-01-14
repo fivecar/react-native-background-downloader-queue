@@ -1,13 +1,12 @@
-import { myPackage } from '../src';
+import DownloadQueue from "../src";
 
-describe('index', () => {
-  describe('myPackage', () => {
-    it('should return a string containing the message', () => {
-      const message = 'Hello';
+describe("DownloadQueue", () => {
+  describe("Basics", () => {
+    it("should throw when uninitialized", async () => {
+      const queue = new DownloadQueue();
 
-      const result = myPackage(message);
-
-      expect(result).toMatch(message);
+      await expect(() => queue.addUrl("whatevs")).rejects.toThrow();
+      await expect(() => queue.removeUrl("whatevs")).rejects.toThrow();
     });
   });
 });
