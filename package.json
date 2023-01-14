@@ -1,5 +1,5 @@
 {
-  "name": "typescript-npm-package-template",
+  "name": "my-package",
   "version": "0.0.0-development",
   "description": "A template for creating npm packages using TypeScript and VSCode",
   "main": "./lib/index.js",
@@ -19,32 +19,24 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ryansonshine/typescript-npm-package-template.git"
+    "url": "git+https://github.com/fivecar/my-package.git"
   },
   "license": "MIT",
   "author": {
-    "name": "Ryan Sonshine",
-    "email": "ryansonshine@users.noreply.github.com",
-    "url": "https://github.com/ryansonshine"
+    "name": "Philip Su",
+    "email": "39933441+fivecar@users.noreply.github.com",
+    "url": "https://github.com/fivecar"
   },
   "engines": {
     "node": ">=12.0"
   },
   "keywords": [
-    "boilerplate",
-    "template",
-    "typescript",
-    "vscode",
-    "jest",
-    "husky",
-    "commitizen",
-    "semantic-release",
-    "codecov"
+    "stuff"
   ],
   "bugs": {
-    "url": "https://github.com/ryansonshine/typescript-npm-package-template/issues"
+    "url": "https://github.com/fivecar/my-package/issues"
   },
-  "homepage": "https://github.com/ryansonshine/typescript-npm-package-template#readme",
+  "homepage": "https://github.com/fivecar/my-package#readme",
   "devDependencies": {
     "@ryansonshine/commitizen": "^4.2.8",
     "@ryansonshine/cz-conventional-changelog": "^3.3.4",
