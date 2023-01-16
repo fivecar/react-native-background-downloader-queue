@@ -1,15 +1,7 @@
+/** @type {import('ts-jest').JestConfigWithTsJest} */
 module.exports = {
-  preset: 'ts-jest',
-  testEnvironment: 'node',
-  testMatch: ['**/test/**/*.spec.ts'],
-  collectCoverageFrom: [
-    '<rootDir>/src/**/*.ts',
-    '!<rootDir>/src/types/**/*.ts',
-  ],
-  globals: {
-    'ts-jest': {
-      diagnostics: false,
-      isolatedModules: true,
-    },
-  },
+  preset: "react-native",
+  testEnvironment: "node",
+  transformIgnorePatterns: ["/node_modules/(?!(@?react-native))/"],
+  setupFiles: ["./jest.setup.js"],
 };
