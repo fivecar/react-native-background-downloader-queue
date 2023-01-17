@@ -87,16 +87,26 @@ jest.mock("react-native-fs", () => {
   };
 });
 
+jest.useFakeTimers();
+jest.spyOn(global, "setTimeout");
+
 const kvfs = new KVFS(AsyncStorage, "DownloadQueue");
 
-describe("DownloadQueue", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
+// When jest advances fake timers, the async pending queue isn't flushed. Thus
+// your expects will run before the async code that's executed by any timer
+// actually finishes. Await this function to ensure that all async code fired
+// by timers actually is flushed.
+// https://github.com/facebook/jest/issues/2157#issuecomment-1272503136
+async function advanceThroughNextTimersAndPromises() {
+  jest.advanceTimersToNextTimer();
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+  await new Promise(jest.requireActual("timers").setImmediate);
+}
 
+describe("DownloadQueue", () => {
   afterEach(async () => {
     await kvfs.rmAllForce();
-    jest.restoreAllMocks();
+    jest.clearAllMocks();
   });
 
   describe("Initialization", () => {
@@ -147,6 +157,7 @@ describe("DownloadQueue", () => {
         id: "foo",
         url: "http://foo.com",
         path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
       });
       await queue.init();
       expect(unlink).toHaveBeenCalledWith(
@@ -178,6 +189,7 @@ describe("DownloadQueue", () => {
         id: "foo",
         url: "http://foo.com",
         path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
       });
       await queue.init();
       expect(backTask.resume).toHaveBeenCalledTimes(1);
@@ -219,6 +231,7 @@ describe("DownloadQueue", () => {
         id: "foo",
         url: "http://foo.com",
         path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
       });
       await queue.init();
       expect(task.resume).not.toHaveBeenCalled();
@@ -309,6 +322,87 @@ describe("DownloadQueue", () => {
 
       await relaunchQueue.init();
       expect(task.resume).toHaveBeenCalled();
+    });
+
+    it("shouldn't re-download revived spec if file already downloaded", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+        return {
+          ...task,
+          id: spec.id,
+        };
+      });
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      expect(download).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      (exists as jest.Mock).mockImplementationOnce(() => true);
+
+      await queue.removeUrl("http://foo.com", 0);
+      await queue.addUrl("http://foo.com");
+
+      expect(download).toHaveBeenCalledTimes(1); // Just the first time only
+      (download as jest.Mock).mockClear();
+    });
+
+    it("shouldn't re-download revived spec on relaunch if file already downloaded", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+      let assignedId = "tbd";
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+        assignedId = spec.id;
+        return task;
+      });
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      expect(download).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      await queue.removeUrl("http://foo.com");
+
+      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
+        (): DownloadTask[] => [
+          {
+            ...task,
+            id: assignedId,
+          },
+        ]
+      );
+      (readdir as jest.Mock).mockImplementationOnce(() => [assignedId]);
+
+      // Pretend app got launched again by using another queue
+      const relaunchQueue = new DownloadQueue(undefined, "mydomain");
+
+      await relaunchQueue.init();
+      expect(download).toHaveBeenCalledTimes(1); // Just the first time only
+
+      (download as jest.Mock).mockClear();
     });
   });
 
@@ -436,10 +530,201 @@ describe("DownloadQueue", () => {
       expect(AsyncStorage.multiRemove).toHaveBeenCalledWith([
         "DownloadQueue/mydomain/" + idMap["http://boo.com"],
       ]);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(1);
       expect(download).toHaveBeenCalledWith(
         expect.objectContaining({ url: "http://shoo.com" })
       );
       expect(download).toHaveBeenCalledTimes(4);
+
+      (download as jest.Mock).mockClear();
+    });
+  });
+
+  describe("Lazy deletion", () => {
+    it("should not immediately delete lazy-deletions", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+      let assignedId = "tbd";
+
+      (download as jest.Mock).mockImplementationOnce((spec: { id: string }) => {
+        assignedId = spec.id;
+        return {
+          ...task,
+          id: assignedId,
+        };
+      });
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+      await queue.removeUrl("http://foo.com", 0);
+
+      expect(unlink).toHaveBeenCalledTimes(0);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(0);
+    });
+
+    it("should delete only next-init lazy deletions during init", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+      let assignedId = "tbd";
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }) => {
+          if (spec.url === "http://foo.com") {
+            assignedId = spec.id;
+          }
+          return {
+            ...task,
+            id: spec.id,
+          };
+        }
+      );
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+      await queue.addUrl("http://boo.com");
+      await queue.removeUrl("http://foo.com", 0);
+      await queue.removeUrl("http://boo.com", Date.now() + 30000);
+
+      const nextLaunchQueue = new DownloadQueue(undefined, "mydomain");
+
+      await nextLaunchQueue.init();
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(1);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledWith([
+        `DownloadQueue/mydomain/${assignedId}`,
+      ]);
+
+      jest.runAllTimers(); // Or else the test hangs on boo!
+      (download as jest.Mock).mockClear();
+    });
+
+    it("should delete lazy deletions on time", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+      const urlsToIds: { [url: string]: string } = {
+        "http://foo.com": "foo",
+        "http://boo.com": "boo",
+        "http://moo.com": "moo",
+      };
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }) => {
+          urlsToIds[spec.url] = spec.id;
+          return {
+            ...task,
+            id: spec.id,
+          };
+        }
+      );
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+      await queue.addUrl("http://boo.com");
+      await queue.addUrl("http://moo.com");
+
+      await queue.removeUrl("http://foo.com", 0);
+      expect(jest.getTimerCount()).toEqual(0);
+
+      await queue.removeUrl("http://boo.com", Date.now() + 30000);
+      await queue.removeUrl("http://moo.com", Date.now() + 180000);
+
+      expect(AsyncStorage.multiRemove).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toEqual(2);
+
+      await advanceThroughNextTimersAndPromises();
+      expect(jest.getTimerCount()).toEqual(1);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledWith([
+        `DownloadQueue/mydomain/${urlsToIds["http://boo.com"]}`,
+      ]);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(1);
+      expect(unlink).toHaveBeenCalledTimes(1);
+      expect(unlink).toHaveBeenCalledWith(
+        expect.stringMatching(
+          `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${urlsToIds["http://boo.com"]}`
+        )
+      );
+      expect(jest.getTimerCount()).toEqual(1);
+
+      await advanceThroughNextTimersAndPromises();
+      expect(jest.getTimerCount()).toEqual(0);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(2);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledWith([
+        `DownloadQueue/mydomain/${urlsToIds["http://moo.com"]}`,
+      ]);
+      expect(unlink).toHaveBeenCalledTimes(2);
+      expect(unlink).toHaveBeenCalledWith(
+        expect.stringMatching(
+          `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${urlsToIds["http://moo.com"]}`
+        )
+      );
+
+      (download as jest.Mock).mockClear();
+    });
+
+    it("should revive re-added lazy-deletions", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+      let assignedId = "tbd";
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+        assignedId = spec.id;
+        return {
+          ...task,
+          id: assignedId,
+        };
+      });
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      expect(download).toHaveBeenCalledTimes(1);
+
+      await queue.removeUrl("http://foo.com", 0);
+
+      expect(unlink).toHaveBeenCalledTimes(0);
+      expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(0);
+
+      await queue.addUrl("http://foo.com");
+      expect(download).toHaveBeenCalledTimes(2);
 
       (download as jest.Mock).mockClear();
     });

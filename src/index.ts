@@ -12,6 +12,11 @@ interface Spec {
   id: string;
   url: string;
   path: string;
+  /**
+   * Creation time in timestamp millis. Zero if spec should be deleted on next
+   * launch. If negative, the absolute value is the time it should be deleted.
+   */
+  createTime: number;
 }
 
 function basePath() {
@@ -62,8 +67,22 @@ export default class DownloadQueue {
       checkForExistingDownloads(),
       RNFS.readdir(`${basePath()}/${this.domain}`),
     ]);
+    const now = Date.now();
+    const loadedSpecs = specData.map(spec => spec.value as Spec);
+    const deletes = loadedSpecs.filter(
+      spec =>
+        spec.createTime === 0 ||
+        (spec.createTime < 0 && -spec.createTime <= now)
+    );
+    const deleteIds = new Set(deletes.map(spec => spec.id));
 
-    this.specs = specData.map(spec => spec.value as Spec);
+    // Process deletions before all other things. Simplifies logic around all
+    // the logic below (e.g. tasks to revive/etc) if deletions have happened
+    // already.
+    await Promise.all(
+      deletes.map(spec => this.kvfs.rm(this.keyFromId(spec.id)))
+    );
+    this.specs = loadedSpecs.filter(spec => !deleteIds.has(spec.id));
 
     // First revive tasks that were working in the background
     existingTasks.forEach(task => {
@@ -86,7 +105,7 @@ export default class DownloadQueue {
       specsToDownload.forEach(spec => this.start(spec));
     }
 
-    // Finally, delete any files that don't have a spec
+    // Delete any files that don't have a spec
     const orphanedFiles = dirFilenames.filter(
       filename => !this.specs.some(spec => spec.id === filename)
     );
@@ -96,13 +115,38 @@ export default class DownloadQueue {
       );
     }
 
+    this.scheduleDeletions(
+      this.specs.filter(spec => -spec.createTime > now),
+      now
+    );
+
     this.inited = true;
   }
 
+  /**
+   * Downloads a url to the local documents directory. Safe to call if it's
+   * already been added before. If it's been lazy-deleted, it'll be revived.
+   *
+   * @param url Remote url to download
+   */
   async addUrl(url: string): Promise<void> {
     this.verifyInitialized();
 
-    if (this.specs.some(spec => spec.url === url)) {
+    const curSpec = this.specs.find(spec => spec.url === url);
+    if (curSpec) {
+      // Revive lazy-deletion cases
+      if (curSpec.createTime <= 0) {
+        curSpec.createTime = Date.now();
+
+        const [fileExists] = await Promise.all([
+          RNFS.exists(this.pathFromId(curSpec.id)),
+          this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
+        ]);
+        console.log("Does file exist");
+        if (!fileExists) {
+          this.start(curSpec);
+        }
+      }
       return;
     }
 
@@ -111,6 +155,7 @@ export default class DownloadQueue {
       id,
       url,
       path: this.pathFromId(id),
+      createTime: Date.now(),
     };
 
     // Do this first, before starting the download, so that we don't leave any
@@ -121,9 +166,27 @@ export default class DownloadQueue {
     this.start(spec);
   }
 
-  async removeUrl(url: string): Promise<void> {
+  /**
+   * Removes a url record and any associated file that's been downloaded. Can
+   * optionally be a lazy delete.
+   *
+   * @param url Url to remove, including the downloaded file associated with it
+   * @param deleteTime (optional) The timestamp beyond which the file associated
+   * with the url should be deleted, or zero if it should be deleted the next
+   * time DownloadQueue is initialized. The record of the url, in the meantime,
+   * won't be acknowledged via DownloadQueue's API.
+   */
+  async removeUrl(url: string, deleteTime = -1): Promise<void> {
     this.verifyInitialized();
 
+    return await this.removeUrlInternal(url, deleteTime);
+  }
+
+  private async removeUrlInternal(
+    url: string,
+    deleteTime: number,
+    scheduleDeletion = true
+  ): Promise<void> {
     const index = this.specs.findIndex(spec => spec.url === url);
 
     if (index < 0) {
@@ -131,79 +194,64 @@ export default class DownloadQueue {
     }
 
     const spec = this.specs[index];
+    const task = this.removeTask(spec.id);
 
-    try {
-      const task = this.removeTask(spec.id);
+    if (task) {
+      task.stop();
+    }
 
-      if (task) {
-        task.stop();
+    // If it's a lazy delete, just update the spec but don't mess with files.
+    if (deleteTime >= 0) {
+      spec.createTime = -deleteTime; // Negative zero also ok for us.
+      await this.kvfs.write(this.keyFromId(spec.id), spec);
+      if (scheduleDeletion && deleteTime > 0) {
+        this.scheduleDeletions([spec], Date.now());
       }
-
+    } else {
       // Run serially because we definitely want to delete the spec from
       // storage, but unlink could (acceptably) throw if the file doesn't exist.
       await this.kvfs.rm(this.keyFromId(spec.id));
       this.specs.splice(index, 1);
 
-      await RNFS.unlink(spec.path);
-    } catch {
-      // Expected for missing files
+      try {
+        await RNFS.unlink(spec.path);
+      } catch {
+        // Expected for missing files
+      }
     }
   }
 
-  async setQueue(urls: string[]): Promise<void> {
+  /**
+   * Sets the sum total of urls to keep in the queue. If previously-added urls
+   * don't show up here, they'll be removed. New urls will be added.
+   *
+   * @param deleteTime (optional) The timestamp beyond which files associated
+   * with removed urls should be deleted, or zero if they should be deleted the
+   * next time DownloadQueue is initialized. The record of those urls, in the
+   * meantime, won't be acknowledged via DownloadQueue's API.
+   */
+  async setQueue(urls: string[], deleteTime = -1): Promise<void> {
     this.verifyInitialized();
 
-    const existingUrls = this.specs.map(spec => spec.url);
-    const urlsToAdd = urls.filter(url => !existingUrls.includes(url));
-    const specsToRemove = this.specs.filter(spec => !urls.includes(spec.url));
+    const urlSet = new Set(urls);
+    const liveUrls = new Set(
+      this.specs.filter(spec => spec.createTime > 0).map(spec => spec.url)
+    );
+    const urlsToAdd = urls.filter(url => !liveUrls.has(url));
+    const specsToRemove = this.specs.filter(spec => !urlSet.has(spec.url));
+    const urlsToRemove = specsToRemove.map(spec => spec.url);
 
-    // We could call all the adds and removes serially, but this is faster. It
-    // requires that we keep the logic in sync between the individual
-    // adds/removes and here.
-    if (urlsToAdd.length) {
-      const newSpecs = urlsToAdd.map(url => {
-        const id = uuid();
-        return {
-          id,
-          url,
-          path: this.pathFromId(id),
-        };
-      });
-      await this.kvfs.writeMulti(
-        undefined,
-        newSpecs.map(spec => ({ path: this.keyFromId(spec.id), value: spec }))
-      );
-      this.specs.push(...newSpecs);
-      newSpecs.forEach(spec => this.start(spec));
+    // We could create logic that's more efficient than this (e.g. by bundling
+    // bulk operations on this.kvfs/etc), but it requires that we keep the lazy-
+    // delete logic consistent with add/removeUrl. The risk of bugs is not worth
+    // the performance boost if you assume most people aren't massively churning
+    // their queues.
+    for (const url of urlsToRemove) {
+      await this.removeUrlInternal(url, deleteTime, false);
     }
-
-    if (specsToRemove.length) {
-      specsToRemove.forEach(spec => {
-        const task = this.removeTask(spec.id);
-
-        if (task) {
-          task.stop();
-        }
-      });
-
-      await this.kvfs.rmMulti(
-        specsToRemove.map(spec => this.keyFromId(spec.id))
-      );
-      this.specs = this.specs.filter(
-        spec => !specsToRemove.some(rem => rem.url === spec.url)
-      );
-
-      // Serialize this after the spec removals, intentionally, so that we don't
-      // ever remove a file from disk while keeping the spec.
-      await Promise.all(
-        specsToRemove.map(async spec => {
-          try {
-            await RNFS.unlink(spec.path);
-          } catch {
-            // throws expected when file doesn't exist
-          }
-        })
-      );
+    this.scheduleDeletions(specsToRemove, Date.now());
+    for (const url of urlsToAdd) {
+      await this.addUrl(url);
     }
   }
 
@@ -266,6 +314,44 @@ export default class DownloadQueue {
     this.tasks.push(task);
   }
 
+  private scheduleDeletions(toDelete: Spec[], basisTimestamp: number) {
+    const wakeUpTimes = new Set(
+      toDelete.map(spec => roundToNextMinute(-spec.createTime))
+    );
+
+    // We chunk the wakeup times into whole minutes in case someone's managing a
+    // huge cache of files that all need deletion.
+    for (const wakeUpTime of wakeUpTimes) {
+      const timeout = wakeUpTime - basisTimestamp;
+      setTimeout(() => {
+        void this.deleteExpiredSpecs(wakeUpTime);
+      }, timeout);
+    }
+  }
+
+  /**
+   * Doesn't handle createTime === 0 cases, which are deleted during init()
+   * @param basisTimestamp The timestamp to use as the basis for deletion
+   */
+  private async deleteExpiredSpecs(basisTimestamp: number) {
+    const toDelete = this.specs.filter(
+      spec => spec.createTime < 0 && -spec.createTime <= basisTimestamp
+    );
+    const delIds = new Set(toDelete.map(spec => spec.id));
+
+    await Promise.all(
+      toDelete.map(async spec => {
+        await this.kvfs.rm(this.keyFromId(spec.id));
+        try {
+          await RNFS.unlink(spec.path);
+        } catch {
+          // Expected for missing files
+        }
+      })
+    );
+    this.specs = this.specs.filter(spec => !delIds.has(spec.id));
+  }
+
   private pathFromId(id: string) {
     return `${basePath()}/${this.domain}/${id}`;
   }
@@ -282,4 +368,8 @@ export default class DownloadQueue {
       throw new Error("DownloadQueue not initialized");
     }
   }
+}
+
+function roundToNextMinute(timestamp: number) {
+  return Math.ceil(timestamp / 60000) * 60000;
 }
