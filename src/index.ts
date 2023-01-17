@@ -18,7 +18,17 @@ function basePath() {
   return `${RNFS.DocumentDirectoryPath}/DownloadQueue`;
 }
 
-const BASE_PATH_LENGTH = basePath().length + 1; // +1 for the slash
+export interface DownloadQueueHandlers {
+  onBegin?: (url: string, totalBytes: number) => void;
+  onProgress?: (
+    url: string,
+    fractionWritten: number,
+    bytesWritten: number,
+    totalBytes: number
+  ) => void;
+  onDone?: (url: string) => void;
+  onError?: (url: string, error: any) => void;
+}
 
 export default class DownloadQueue {
   private domain: string;
@@ -26,13 +36,15 @@ export default class DownloadQueue {
   private tasks: DownloadTask[];
   private inited;
   private kvfs: KeyValueFileSystem;
+  private handlers?: DownloadQueueHandlers;
 
-  constructor(domain = "main") {
+  constructor(handlers?: DownloadQueueHandlers, domain = "main") {
     this.domain = domain;
     this.specs = [];
     this.tasks = [];
     this.inited = false;
-    this.kvfs = new KeyValueFileSystem(AsyncStorage);
+    this.kvfs = new KeyValueFileSystem(AsyncStorage, "DownloadQueue");
+    this.handlers = handlers;
   }
 
   /**
@@ -46,25 +58,20 @@ export default class DownloadQueue {
     }
 
     const [specData, existingTasks, dirFilenames] = await Promise.all([
-      this.kvfs.readMulti<Spec>(`/${this.domain}/*`),
+      this.kvfs.readMulti<Spec>(`${this.keyFromId("")}*`),
       checkForExistingDownloads(),
       RNFS.readdir(`${basePath()}/${this.domain}`),
     ]);
-    const specIds = specData.map(spec => spec.path.slice(BASE_PATH_LENGTH));
 
     this.specs = specData.map(spec => spec.value as Spec);
-    console.log("Spec Ids loaded", specIds);
 
     // First revive tasks that were working in the background
     existingTasks.forEach(task => {
-      if (specIds.includes(task.id)) {
-        console.log("Found existing task", task.id);
-        this.addTask(task);
+      const spec = this.specs.find(spec => spec.id === task.id);
+      if (spec) {
+        this.addTask(spec.url, task);
+        task.resume(); // Assuming checkForExistingDownloads() hasn't already
       } else {
-        console.log(
-          "Found existing task not in saved specs -- stoping download",
-          task.id
-        );
         task.stop();
       }
     });
@@ -76,10 +83,6 @@ export default class DownloadQueue {
         !dirFilenames.includes(spec.id)
     );
     if (specsToDownload.length) {
-      console.log(
-        `Found ${specsToDownload.length} specs that need to be downloaded`
-      );
-
       specsToDownload.forEach(spec => this.start(spec));
     }
 
@@ -88,7 +91,6 @@ export default class DownloadQueue {
       filename => !this.specs.some(spec => spec.id === filename)
     );
     if (orphanedFiles.length) {
-      console.log("Deleting orphaned files", orphanedFiles);
       await Promise.all(
         orphanedFiles.map(filename => RNFS.unlink(this.pathFromId(filename)))
       );
@@ -101,7 +103,6 @@ export default class DownloadQueue {
     this.verifyInitialized();
 
     if (this.specs.some(spec => spec.url === url)) {
-      console.log("Already downloading url, so ignoring add:", url);
       return;
     }
 
@@ -115,9 +116,9 @@ export default class DownloadQueue {
     // Do this first, before starting the download, so that we don't leave any
     // orphans (e.g. if we start a download first but then error on writing the
     // spec).
-    await this.kvfs.write(`/${this.domain}/${id}`, spec);
-    this.start(spec);
+    await this.kvfs.write(this.keyFromId(id), spec);
     this.specs.push(spec);
+    this.start(spec);
   }
 
   async removeUrl(url: string): Promise<void> {
@@ -126,7 +127,6 @@ export default class DownloadQueue {
     const index = this.specs.findIndex(spec => spec.url === url);
 
     if (index < 0) {
-      console.log("Url to remove already not in list", url);
       return;
     }
 
@@ -136,17 +136,94 @@ export default class DownloadQueue {
       const task = this.removeTask(spec.id);
 
       if (task) {
-        console.log("Stopping download", spec.id);
         task.stop();
       }
 
       // Run serially because we definitely want to delete the spec from
-      // storae, but unlink could (acceptably) throw if the file doesn't exist.
-      await this.kvfs.rm(`/${this.domain}/${spec.id}`);
-      await RNFS.unlink(spec.path);
-    } finally {
+      // storage, but unlink could (acceptably) throw if the file doesn't exist.
+      await this.kvfs.rm(this.keyFromId(spec.id));
       this.specs.splice(index, 1);
+
+      await RNFS.unlink(spec.path);
+    } catch {
+      // Expected for missing files
     }
+  }
+
+  async setQueue(urls: string[]): Promise<void> {
+    this.verifyInitialized();
+
+    const existingUrls = this.specs.map(spec => spec.url);
+    const urlsToAdd = urls.filter(url => !existingUrls.includes(url));
+    const specsToRemove = this.specs.filter(spec => !urls.includes(spec.url));
+
+    // We could call all the adds and removes serially, but this is faster. It
+    // requires that we keep the logic in sync between the individual
+    // adds/removes and here.
+    if (urlsToAdd.length) {
+      const newSpecs = urlsToAdd.map(url => {
+        const id = uuid();
+        return {
+          id,
+          url,
+          path: this.pathFromId(id),
+        };
+      });
+      await this.kvfs.writeMulti(
+        undefined,
+        newSpecs.map(spec => ({ path: this.keyFromId(spec.id), value: spec }))
+      );
+      this.specs.push(...newSpecs);
+      newSpecs.forEach(spec => this.start(spec));
+    }
+
+    if (specsToRemove.length) {
+      specsToRemove.forEach(spec => {
+        const task = this.removeTask(spec.id);
+
+        if (task) {
+          task.stop();
+        }
+      });
+
+      await this.kvfs.rmMulti(
+        specsToRemove.map(spec => this.keyFromId(spec.id))
+      );
+      this.specs = this.specs.filter(
+        spec => !specsToRemove.some(rem => rem.url === spec.url)
+      );
+
+      // Serialize this after the spec removals, intentionally, so that we don't
+      // ever remove a file from disk while keeping the spec.
+      await Promise.all(
+        specsToRemove.map(async spec => {
+          try {
+            await RNFS.unlink(spec.path);
+          } catch {
+            // throws expected when file doesn't exist
+          }
+        })
+      );
+    }
+  }
+
+  /**
+   * Gets a remote or local url, preferring to the local path when possible. If
+   * the local file hasn't yet been downloaded, returns the remote url.
+   * @param url The remote URL to check for local availability
+   * @returns A local file path if the URL has already been downloaded, else url
+   */
+  async getAvailableUrl(url: string): Promise<string> {
+    this.verifyInitialized();
+
+    const spec = this.specs.find(spec => spec.url === url);
+
+    if (!spec) {
+      return url;
+    }
+
+    const fileExists = await RNFS.exists(spec.path);
+    return fileExists ? spec.path : url;
   }
 
   private removeTask(id: string): DownloadTask | undefined {
@@ -161,37 +238,40 @@ export default class DownloadQueue {
   }
 
   private start(spec: Spec) {
-    console.log("Starting download", spec);
     const task = download({
       id: spec.id,
       url: spec.url,
       destination: spec.path,
     });
 
-    this.addTask(task);
+    this.addTask(spec.url, task);
   }
 
-  private addTask(task: DownloadTask) {
+  private addTask(url: string, task: DownloadTask) {
     task
       .begin(data => {
-        console.log(`Live going to download ${data.expectedBytes} bytes!`);
+        this.handlers?.onBegin?.(url, data.expectedBytes);
       })
-      .progress(percent => {
-        console.log(`Live downloaded: ${percent * 100}%`);
+      .progress((percent, bytes, total) => {
+        this.handlers?.onProgress?.(url, percent, bytes, total);
       })
       .done(() => {
-        console.log("Live download is done!");
         this.removeTask(task.id);
+        this.handlers?.onDone?.(url);
       })
       .error(error => {
-        console.log("Live download canceled due to error: ", error);
         this.removeTask(task.id);
+        this.handlers?.onError?.(url, error);
       });
     this.tasks.push(task);
   }
 
   private pathFromId(id: string) {
     return `${basePath()}/${this.domain}/${id}`;
+  }
+
+  private keyFromId(id: string) {
+    return `/${this.domain}/${id}`;
   }
 
   /**
