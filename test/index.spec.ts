@@ -38,6 +38,7 @@ jest.mock("@react-native-async-storage/async-storage", () => {
 jest.mock("react-native-background-downloader", () => ({
   checkForExistingDownloads: jest.fn(() => []),
   download: jest.fn(() => ({})),
+  completeHandler: jest.fn(),
 }));
 
 jest.mock("react-native-fs", () => {
@@ -116,6 +117,8 @@ describe("DownloadQueue", () => {
       await expect(queue.addUrl("whatevs")).rejects.toThrow();
       await expect(queue.removeUrl("whatevs")).rejects.toThrow();
       await expect(queue.setQueue([])).rejects.toThrow();
+      expect(() => queue.pauseAll()).toThrow();
+      expect(() => queue.resumeAll()).toThrow();
       await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
     });
 
@@ -239,6 +242,75 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledWith(
         expect.objectContaining({ id: "foo" })
       );
+    });
+  });
+
+  describe("Termination", () => {
+    it("should stop all active tasks", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const backTask: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => backTask),
+        progress: jest.fn(() => backTask),
+        done: jest.fn(() => backTask),
+        error: jest.fn(() => backTask),
+        resume: jest.fn(() => backTask),
+        stop: jest.fn(() => backTask),
+      };
+
+      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
+        (): DownloadTask[] => [backTask]
+      );
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init();
+      expect(backTask.resume).toHaveBeenCalled();
+
+      queue.terminate();
+      expect(backTask.stop).toHaveBeenCalled();
+    });
+
+    it("should restart tasks after terminate/re-init", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const backTask: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => backTask),
+        progress: jest.fn(() => backTask),
+        done: jest.fn(() => backTask),
+        error: jest.fn(() => backTask),
+        resume: jest.fn(() => backTask),
+        stop: jest.fn(() => backTask),
+      };
+
+      (checkForExistingDownloads as jest.Mock).mockImplementation(
+        (): DownloadTask[] => [backTask]
+      );
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init();
+      expect(backTask.resume).toHaveBeenCalled();
+
+      queue.terminate();
+      expect(backTask.stop).toHaveBeenCalled();
+
+      await queue.init();
+      expect(backTask.resume).toHaveBeenCalledTimes(2);
+
+      (checkForExistingDownloads as jest.Mock).mockClear();
     });
   });
 
@@ -725,6 +797,92 @@ describe("DownloadQueue", () => {
 
       await queue.addUrl("http://foo.com");
       expect(download).toHaveBeenCalledTimes(2);
+
+      (download as jest.Mock).mockClear();
+    });
+  });
+
+  describe("Pause / resume", () => {
+    it("should start paused if requested", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const backTask: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => backTask),
+        progress: jest.fn(() => backTask),
+        done: jest.fn(() => backTask),
+        error: jest.fn(() => backTask),
+        resume: jest.fn(() => backTask),
+        pause: jest.fn(() => backTask),
+      };
+
+      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
+        (): DownloadTask[] => [backTask]
+      );
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init(false);
+      expect(backTask.resume).not.toHaveBeenCalled();
+      expect(backTask.pause).toHaveBeenCalled();
+      expect(download).not.toHaveBeenCalled();
+    });
+
+    it("should pause/resume everything when asked", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const baseTask = mock<DownloadTask>();
+      const task: DownloadTask = {
+        ...baseTask,
+        id: "foo",
+        begin: jest.fn(() => task),
+        progress: jest.fn(() => task),
+        done: jest.fn(() => task),
+        error: jest.fn(() => task),
+        resume: jest.fn(() => task),
+        pause: jest.fn(() => task),
+        stop: jest.fn(() => task),
+      };
+      const urlsToIds: { [url: string]: string } = {
+        "http://foo.com": "foo",
+        "http://boo.com": "boo",
+        "http://moo.com": "moo",
+      };
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }) => {
+          urlsToIds[spec.url] = spec.id;
+          return {
+            ...task,
+            id: spec.id,
+          };
+        }
+      );
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+      await queue.addUrl("http://boo.com");
+      await queue.addUrl("http://moo.com");
+
+      expect(download).toHaveBeenCalledTimes(3);
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(task.pause).not.toHaveBeenCalled();
+
+      queue.pauseAll();
+
+      expect(download).toHaveBeenCalledTimes(3); // no change expected here
+      expect(task.pause).toHaveBeenCalledTimes(3);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      queue.resumeAll();
+
+      expect(download).toHaveBeenCalledTimes(3); // no change expected here
+      expect(task.pause).toHaveBeenCalledTimes(3); // no change here either
+      expect(task.resume).toHaveBeenCalledTimes(3);
 
       (download as jest.Mock).mockClear();
     });

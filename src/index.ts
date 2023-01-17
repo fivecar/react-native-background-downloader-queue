@@ -1,7 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import KeyValueFileSystem from "key-value-file-system";
+import { Platform } from "react-native";
 import {
   checkForExistingDownloads,
+  completeHandler,
   download,
   DownloadTask,
 } from "react-native-background-downloader";
@@ -42,6 +44,7 @@ export default class DownloadQueue {
   private inited;
   private kvfs: KeyValueFileSystem;
   private handlers?: DownloadQueueHandlers;
+  private active: boolean;
 
   constructor(handlers?: DownloadQueueHandlers, domain = "main") {
     this.domain = domain;
@@ -50,14 +53,19 @@ export default class DownloadQueue {
     this.inited = false;
     this.kvfs = new KeyValueFileSystem(AsyncStorage, "DownloadQueue");
     this.handlers = handlers;
+    this.active = false;
   }
 
   /**
    * Reconsistutes state from storage and reconciles it with downloads that
    * might have completed in the background. Always call this before using the
    * rest of the class.
+   *
+   * @param startActive Whether to start the queue in an active state where
+   * downloads will be started. If false, no downloads will begin until you
+   * call resumeAll().
    */
-  async init(): Promise<void> {
+  async init(startActive = true): Promise<void> {
     if (this.inited) {
       throw new Error("DownloadQueue already initialized");
     }
@@ -82,14 +90,20 @@ export default class DownloadQueue {
     await Promise.all(
       deletes.map(spec => this.kvfs.rm(this.keyFromId(spec.id)))
     );
+
     this.specs = loadedSpecs.filter(spec => !deleteIds.has(spec.id));
+    this.active = startActive;
 
     // First revive tasks that were working in the background
     existingTasks.forEach(task => {
       const spec = this.specs.find(spec => spec.id === task.id);
       if (spec) {
         this.addTask(spec.url, task);
-        task.resume(); // Assuming checkForExistingDownloads() hasn't already
+        if (this.active) {
+          task.resume(); // Assuming checkForExistingDownloads() hasn't already
+        } else {
+          task.pause();
+        }
       } else {
         task.stop();
       }
@@ -121,6 +135,20 @@ export default class DownloadQueue {
     );
 
     this.inited = true;
+  }
+
+  /**
+   * Terminates all pending downloads and stops all activity, including
+   * processing lazy-deletes. You can re-init() if you'd like -- but in most
+   * cases where you plan to re-init, pause() might be what you really meant.
+   */
+  terminate(): void {
+    this.active = false;
+    this.tasks.forEach(task => void task.stop());
+    this.tasks = [];
+    this.specs = [];
+    this.handlers = undefined;
+    this.inited = false;
   }
 
   /**
@@ -256,6 +284,29 @@ export default class DownloadQueue {
   }
 
   /**
+   * Pauses all active downloads. Most used to implement wifi-only downloads,
+   * by pausing when NetInfo reports a non-wifi connection.
+   */
+  pauseAll(): void {
+    this.verifyInitialized();
+
+    this.active = false;
+    this.tasks.forEach(task => void task.pause());
+  }
+
+  /**
+   * Resumes all active downloads that were previously paused. If you init()
+   * with startActive === false, you'll want to call this at some point or else
+   * downloads will never happen.
+   */
+  resumeAll(): void {
+    this.verifyInitialized();
+
+    this.active = true;
+    this.tasks.forEach(task => void task.resume());
+  }
+
+  /**
    * Gets a remote or local url, preferring to the local path when possible. If
    * the local file hasn't yet been downloaded, returns the remote url.
    * @param url The remote URL to check for local availability
@@ -293,6 +344,9 @@ export default class DownloadQueue {
     });
 
     this.addTask(spec.url, task);
+    if (!this.active) {
+      task.pause();
+    }
   }
 
   private addTask(url: string, task: DownloadTask) {
@@ -306,6 +360,9 @@ export default class DownloadQueue {
       .done(() => {
         this.removeTask(task.id);
         this.handlers?.onDone?.(url);
+        if (Platform.OS === "ios") {
+          completeHandler(task.id);
+        }
       })
       .error(error => {
         this.removeTask(task.id);

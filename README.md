@@ -11,9 +11,10 @@
 ## Install
 
 First install peer dependencies:
-* react-native-background-downloader [using these instructions](https://github.com/kesha-antonov/react-native-background-downloader#readme)
-* react-native-fs [using these instructions](https://github.com/itinance/react-native-fs#readme)
-* @react-native-async-storage/async-storage [using these instructions](https://github.com/react-native-async-storage/async-storage#readme)
+* [react-native-background-downloader](https://github.com/kesha-antonov/react-native-background-downloader#readme)
+* [react-native-fs](https://github.com/itinance/react-native-fs#readme)
+* [@react-native-async-storage/async-storage](https://github.com/react-native-async-storage/async-storage#readme)
+* (optionally) [@react-native-community/netinfo](https://www.npmjs.com/package/@react-native-community/netinfo), if you want to download only on wifi.
 
 Once those are done, install this package:
 
