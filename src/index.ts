@@ -57,7 +57,7 @@ export default class DownloadQueue {
   }
 
   /**
-   * Reconsistutes state from storage and reconciles it with downloads that
+   * Reconstitutes state from storage and reconciles it with downloads that
    * might have completed in the background. Always call this before using the
    * rest of the class.
    *
@@ -120,7 +120,11 @@ export default class DownloadQueue {
         !existingTasks.some(task => task.id === spec.id) &&
         !dirFilenames.includes(spec.id)
     );
-    console.log("Init specs to download", specsToDownload.length, specsToDownload);
+    console.log(
+      "Init specs to download",
+      specsToDownload.length,
+      specsToDownload
+    );
     if (specsToDownload.length) {
       specsToDownload.forEach(spec => this.start(spec));
     }
