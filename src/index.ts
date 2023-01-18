@@ -73,7 +73,7 @@ export default class DownloadQueue {
     const [specData, existingTasks, dirFilenames] = await Promise.all([
       this.kvfs.readMulti<Spec>(`${this.keyFromId("")}*`),
       checkForExistingDownloads(),
-      RNFS.readdir(`${basePath()}/${this.domain}`),
+      this.getDirFilenames(),
     ]);
     const now = Date.now();
     const loadedSpecs = specData.map(spec => spec.value as Spec);
@@ -94,10 +94,15 @@ export default class DownloadQueue {
     this.specs = loadedSpecs.filter(spec => !deleteIds.has(spec.id));
     this.active = startActive;
 
+    console.log("Init'd specs", this.specs.length, this.specs);
+    console.log("Existing tasks", existingTasks.length, existingTasks);
+    console.log("Dirnames", dirFilenames.length, dirFilenames);
+
     // First revive tasks that were working in the background
     existingTasks.forEach(task => {
       const spec = this.specs.find(spec => spec.id === task.id);
       if (spec) {
+        console.log("Reviving task on init!", spec.url, spec.createTime);
         this.addTask(spec.url, task);
         if (this.active) {
           task.resume(); // Assuming checkForExistingDownloads() hasn't already
@@ -115,6 +120,7 @@ export default class DownloadQueue {
         !existingTasks.some(task => task.id === spec.id) &&
         !dirFilenames.includes(spec.id)
     );
+    console.log("Init specs to download", specsToDownload.length, specsToDownload);
     if (specsToDownload.length) {
       specsToDownload.forEach(spec => this.start(spec));
     }
@@ -160,8 +166,10 @@ export default class DownloadQueue {
   async addUrl(url: string): Promise<void> {
     this.verifyInitialized();
 
+    console.log("Adding url", url);
     const curSpec = this.specs.find(spec => spec.url === url);
     if (curSpec) {
+      console.log("Found curSpec", curSpec);
       // Revive lazy-deletion cases
       if (curSpec.createTime <= 0) {
         curSpec.createTime = Date.now();
@@ -170,7 +178,6 @@ export default class DownloadQueue {
           RNFS.exists(this.pathFromId(curSpec.id)),
           this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
         ]);
-        console.log("Does file exist");
         if (!fileExists) {
           this.start(curSpec);
         }
@@ -185,6 +192,8 @@ export default class DownloadQueue {
       path: this.pathFromId(id),
       createTime: Date.now(),
     };
+
+    console.log("Writing new url's spec", spec.id, spec.path);
 
     // Do this first, before starting the download, so that we don't leave any
     // orphans (e.g. if we start a download first but then error on writing the
@@ -337,11 +346,17 @@ export default class DownloadQueue {
   }
 
   private start(spec: Spec) {
+    console.log("Going to start now");
     const task = download({
       id: spec.id,
       url: spec.url,
       destination: spec.path,
     });
+
+    console.log(
+      `Active (${this.active ? "true" : "false"}) with download task`,
+      task
+    );
 
     this.addTask(spec.url, task);
     if (!this.active) {
@@ -352,12 +367,21 @@ export default class DownloadQueue {
   private addTask(url: string, task: DownloadTask) {
     task
       .begin(data => {
+        console.log(
+          "= Beginning",
+          url,
+          data.expectedBytes,
+          !!this.handlers,
+          !!this.handlers?.onBegin
+        );
         this.handlers?.onBegin?.(url, data.expectedBytes);
       })
       .progress((percent, bytes, total) => {
+        console.log("= Progress", percent, bytes, total);
         this.handlers?.onProgress?.(url, percent, bytes, total);
       })
       .done(() => {
+        console.log("= Done", task.id);
         this.removeTask(task.id);
         this.handlers?.onDone?.(url);
         if (Platform.OS === "ios") {
@@ -407,6 +431,15 @@ export default class DownloadQueue {
       })
     );
     this.specs = this.specs.filter(spec => !delIds.has(spec.id));
+  }
+
+  private async getDirFilenames() {
+    try {
+      return await RNFS.readdir(`${basePath()}/${this.domain}`);
+    } catch {
+      // expected error when the directory doesn't exist
+    }
+    return [];
   }
 
   private pathFromId(id: string) {
