@@ -32,8 +32,8 @@ import DownloadQueue from "react-native-background-download-queue";
 
 new DownloadQueue({
   onBegin: (url, bytes) => console.log("Download started", url, bytes),
-  onDone: url => console.log("Download finished", url)
-  },nError: (url, error) => console.log("Download error", url, error),
+  onDone: url => console.log("Download finished", url),
+  onError: (url, error) => console.log("Download error", url, error),
   onProgress: (url, fraction, bytes, totalBytes) => console.log("Download progress", url, fraction, bytes, totalBytes)
 );
 
