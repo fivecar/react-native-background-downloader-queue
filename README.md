@@ -61,7 +61,15 @@ For full documentation, see the javaDoc style comments in the package which auto
 
 ### `constructor(handlers?: DownloadQueueHandlers, domain = "main")`
 
-Creates a new instance of DownloadQueue. You must call init before actually using it.
+Creates a new instance of DownloadQueue. You must call init before actually using it. You can pass any of the following handlers if you want to be notified
+of download status changes:
+
+| Handler | Description |
+|---|---|
+|`onBegin?: (url: string, totalBytes: number) => void` | Called when the download has begun and the total number of bytes expected is known.|
+|`onProgress?: (url: string, fractionWritten: number, bytesWritten: number, totalBytes: number) => void` | Called at most every 1.5 seconds for any file while it's downloading. `fractionWritten` is between 0.0 and 1.0|
+|`onDone?: (url: string) => void`| Called when the download has completed successfully.|
+|`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file.|
 
 ### `async init(startActive = true): Promise<void>`
 
@@ -83,6 +91,16 @@ Removes a url record and any associated file that's been downloaded. Can optiona
 ### `async setQueue(urls: string[], deleteTime = -1): Promise<void>`
 
 Sets the sum total of urls to keep in the queue. If previously-added urls don't show up here, they'll be removed. New urls will be added.
+
+### `async getQueueStatus(): Promise<DownloadQueueStatus[]>`
+
+Returns the status of all urls in the queue, excluding urls marked for lazy deletion.
+
+| Field | Type | Description  |
+|---|---|---|
+| url | string  | Original url given for the download |
+| path  | string  | Path to local file |
+| complete | boolean | Whether the file is completely downloaded. Note that if this is `false`, `path` may point to a file that either doesn't exist, or that is only partially downloaded. |
 
 ### `pauseAll(): void`
 

@@ -8,7 +8,7 @@ import {
   download,
   DownloadTask,
   ErrorHandler,
-  ProgressHandler,
+  ProgressHandler
 } from "react-native-background-downloader";
 import RNFS, { exists, readdir, unlink } from "react-native-fs";
 import DownloadQueue, { DownloadQueueHandlers } from "../src";
@@ -51,7 +51,7 @@ jest.mock("react-native-fs", () => {
     getFSInfo: jest.fn(),
     getAllExternalFilesDirs: jest.fn(),
     unlink: jest.fn(),
-    exists: jest.fn(),
+    exists: jest.fn(() => false),
     stopDownload: jest.fn(),
     resumeDownload: jest.fn(),
     isResumable: jest.fn(),
@@ -91,6 +91,15 @@ jest.mock("react-native-fs", () => {
 jest.useFakeTimers();
 jest.spyOn(global, "setTimeout");
 
+jest.setTimeout(12341234);
+
+interface TaskWithHandlers extends DownloadTask {
+  _begin?: BeginHandler;
+  _progress?: ProgressHandler;
+  _done?: DoneHandler;
+  _error?: ErrorHandler;
+}
+
 const kvfs = new KVFS(AsyncStorage, "DownloadQueue");
 
 // When jest advances fake timers, the async pending queue isn't flushed. Thus
@@ -104,7 +113,36 @@ async function advanceThroughNextTimersAndPromises() {
   await new Promise(jest.requireActual("timers").setImmediate);
 }
 
+function createBasicTask(): DownloadTask {
+  const baseTask = mock<DownloadTask>();
+  return Object.assign(baseTask, {
+    id: "foo",
+    begin: jest.fn(() => baseTask),
+    progress: jest.fn(() => baseTask),
+    done: jest.fn(() => baseTask),
+    error: jest.fn(() => baseTask),
+    resume: jest.fn(() => baseTask),
+    pause: jest.fn(() => baseTask),
+    stop: jest.fn(() => baseTask),
+  });
+}
+
+let task = createBasicTask();
+
 describe("DownloadQueue", () => {
+  beforeEach(() => {
+    // restore a few commonly-used functions between tests to avoid unexpected
+    // side effects
+    task = createBasicTask();
+
+    (exists as jest.Mock).mockReturnValue(false);
+    (readdir as jest.Mock).mockReturnValue([]);
+    (unlink as jest.Mock).mockImplementation(() => Promise.resolve());
+
+    (download as jest.Mock).mockReturnValue(task);
+    (checkForExistingDownloads as jest.Mock).mockReturnValue([]);
+  });
+
   afterEach(async () => {
     await kvfs.rmAllForce();
     jest.clearAllMocks();
@@ -117,6 +155,7 @@ describe("DownloadQueue", () => {
       await expect(queue.addUrl("whatevs")).rejects.toThrow();
       await expect(queue.removeUrl("whatevs")).rejects.toThrow();
       await expect(queue.setQueue([])).rejects.toThrow();
+      await expect(queue.getQueueStatus()).rejects.toThrow();
       expect(() => queue.pauseAll()).toThrow();
       expect(() => queue.resumeAll()).toThrow();
       await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
@@ -138,7 +177,7 @@ describe("DownloadQueue", () => {
     it("initializes ok without download dir", async () => {
       // The first time a user runs, readdir will throw because our download
       // directory hasn't been created. We should handle that.
-      (readdir as jest.Mock).mockImplementationOnce(() => {
+      (readdir as jest.Mock).mockImplementation(() => {
         throw new Error("dir not found!");
       });
 
@@ -150,7 +189,7 @@ describe("DownloadQueue", () => {
     it("deletes files without specs upon init", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
 
-      (readdir as jest.Mock).mockImplementationOnce(() => ["foo", "bar"]);
+      (readdir as jest.Mock).mockImplementation(() => ["foo", "bar"]);
       await queue.init();
       expect(unlink).toHaveBeenNthCalledWith(
         1,
@@ -166,7 +205,7 @@ describe("DownloadQueue", () => {
     it("doesn't delete files that have specs on init", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
 
-      (readdir as jest.Mock).mockImplementationOnce(() => ["foo", "bar"]);
+      (readdir as jest.Mock).mockImplementation(() => ["foo", "bar"]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -185,20 +224,8 @@ describe("DownloadQueue", () => {
 
     it("revives specs from previous launches", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const backTask: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => backTask),
-        progress: jest.fn(() => backTask),
-        done: jest.fn(() => backTask),
-        error: jest.fn(() => backTask),
-        resume: jest.fn(() => backTask),
-      };
 
-      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
-        (): DownloadTask[] => [backTask]
-      );
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -207,40 +234,22 @@ describe("DownloadQueue", () => {
         createTime: Date.now() - 1000,
       });
       await queue.init();
-      expect(backTask.resume).toHaveBeenCalledTimes(1);
+      expect(task.resume).toHaveBeenCalledTimes(1);
     });
 
     it("stops tasks from previous launches without specs ", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const backTask: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        stop: jest.fn(() => backTask),
-      };
 
-      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
-        (): DownloadTask[] => [backTask]
-      );
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await queue.init();
-      expect(backTask.stop).toHaveBeenCalledTimes(1);
+      expect(task.stop).toHaveBeenCalledTimes(1);
     });
 
     it("starts downloads for specs without tasks or files", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-      };
 
-      (download as jest.Mock).mockImplementationOnce(() => task);
+      (download as jest.Mock).mockReturnValue(task);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -260,21 +269,8 @@ describe("DownloadQueue", () => {
   describe("Termination", () => {
     it("should stop all active tasks", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const backTask: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => backTask),
-        progress: jest.fn(() => backTask),
-        done: jest.fn(() => backTask),
-        error: jest.fn(() => backTask),
-        resume: jest.fn(() => backTask),
-        stop: jest.fn(() => backTask),
-      };
 
-      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
-        (): DownloadTask[] => [backTask]
-      );
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -283,29 +279,16 @@ describe("DownloadQueue", () => {
         createTime: Date.now() - 1000,
       });
       await queue.init();
-      expect(backTask.resume).toHaveBeenCalled();
+      expect(task.resume).toHaveBeenCalled();
 
       queue.terminate();
-      expect(backTask.stop).toHaveBeenCalled();
+      expect(task.stop).toHaveBeenCalled();
     });
 
     it("should restart tasks after terminate/re-init", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const backTask: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => backTask),
-        progress: jest.fn(() => backTask),
-        done: jest.fn(() => backTask),
-        error: jest.fn(() => backTask),
-        resume: jest.fn(() => backTask),
-        stop: jest.fn(() => backTask),
-      };
 
-      (checkForExistingDownloads as jest.Mock).mockImplementation(
-        (): DownloadTask[] => [backTask]
-      );
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -314,32 +297,21 @@ describe("DownloadQueue", () => {
         createTime: Date.now() - 1000,
       });
       await queue.init();
-      expect(backTask.resume).toHaveBeenCalled();
+      expect(task.resume).toHaveBeenCalled();
 
       queue.terminate();
-      expect(backTask.stop).toHaveBeenCalled();
+      expect(task.stop).toHaveBeenCalled();
 
       await queue.init();
-      expect(backTask.resume).toHaveBeenCalledTimes(2);
-
-      (checkForExistingDownloads as jest.Mock).mockClear();
+      expect(task.resume).toHaveBeenCalledTimes(2);
     });
   });
 
   describe("Adding", () => {
     it("should add a url", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-      };
 
-      (download as jest.Mock).mockImplementationOnce(() => task);
+      (download as jest.Mock).mockReturnValue(task);
 
       await queue.init();
       await queue.addUrl("http://foo.com");
@@ -350,17 +322,8 @@ describe("DownloadQueue", () => {
 
     it("shouldn't add the same url twice", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-      };
 
-      (download as jest.Mock).mockImplementationOnce(() => task);
+      (download as jest.Mock).mockReturnValue(task);
 
       await queue.init();
       await queue.addUrl("http://foo.com");
@@ -370,19 +333,9 @@ describe("DownloadQueue", () => {
 
     it("should revive added url upon relaunch", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-      };
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementationOnce((spec: { id: string }) => {
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return task;
       });
@@ -392,14 +345,12 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
-      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
-        (): DownloadTask[] => [
-          {
-            ...task,
-            id: assignedId,
-          },
-        ]
-      );
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([
+        {
+          ...task,
+          id: assignedId,
+        },
+      ]);
 
       // Pretend app got launched again by using another queue
       const relaunchQueue = new DownloadQueue(undefined, "mydomain");
@@ -410,17 +361,6 @@ describe("DownloadQueue", () => {
 
     it("shouldn't re-download revived spec if file already downloaded", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
 
       (download as jest.Mock).mockImplementation((spec: { id: string }) => {
         return {
@@ -434,28 +374,17 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
-      (exists as jest.Mock).mockImplementationOnce(() => true);
+      (exists as jest.Mock).mockImplementation(() => true);
 
       await queue.removeUrl("http://foo.com", 0);
       await queue.addUrl("http://foo.com");
 
+      expect(exists).toHaveBeenCalledTimes(1);
       expect(download).toHaveBeenCalledTimes(1); // Just the first time only
-      (download as jest.Mock).mockClear();
     });
 
     it("shouldn't re-download revived spec on relaunch if file already downloaded", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       let assignedId = "tbd";
 
       (download as jest.Mock).mockImplementation((spec: { id: string }) => {
@@ -470,43 +399,28 @@ describe("DownloadQueue", () => {
 
       await queue.removeUrl("http://foo.com");
 
-      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
-        (): DownloadTask[] => [
-          {
-            ...task,
-            id: assignedId,
-          },
-        ]
-      );
-      (readdir as jest.Mock).mockImplementationOnce(() => [assignedId]);
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([
+        {
+          ...task,
+          id: assignedId,
+        },
+      ]);
+      (readdir as jest.Mock).mockReturnValue([assignedId]);
 
       // Pretend app got launched again by using another queue
       const relaunchQueue = new DownloadQueue(undefined, "mydomain");
 
       await relaunchQueue.init();
       expect(download).toHaveBeenCalledTimes(1); // Just the first time only
-
-      (download as jest.Mock).mockClear();
     });
   });
 
   describe("Removing", () => {
     it("should remove a url", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementationOnce((spec: { id: string }) => {
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return {
           ...task,
@@ -532,20 +446,9 @@ describe("DownloadQueue", () => {
 
     it("should double-remove a url without side effects", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementationOnce((spec: { id: string }) => {
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return {
           ...task,
@@ -576,17 +479,6 @@ describe("DownloadQueue", () => {
   describe("setQueue", () => {
     it("should update a queue with deletion and insertion", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       const idMap: { [key: string]: string } = {};
 
       (download as jest.Mock).mockImplementation(
@@ -619,34 +511,124 @@ describe("DownloadQueue", () => {
         expect.objectContaining({ url: "http://shoo.com" })
       );
       expect(download).toHaveBeenCalledTimes(4);
+    });
+  });
 
-      (download as jest.Mock).mockClear();
+  describe("getQueue", () => {
+    it("it should return yet-to-be downloaded files", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      await queue.init();
+      await queue.setQueue([
+        "http://foo.com",
+        "http://moo.com",
+        "http://boo.com",
+      ]);
+      const res = await queue.getQueueStatus();
+      expect(res).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "http://foo.com", complete: false }),
+          expect.objectContaining({ url: "http://boo.com", complete: false }),
+          expect.objectContaining({ url: "http://moo.com", complete: false }),
+        ])
+      );
+      expect(res.length).toEqual(3);
+    });
+
+    it("it should return downloaded files", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const idMap: { [url: string]: TaskWithHandlers } = {};
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }): Partial<TaskWithHandlers> => {
+          const baseTask = mock<TaskWithHandlers>();
+
+          idMap[spec.url] = Object.assign(baseTask, {
+            ...baseTask,
+            id: spec.id,
+            begin: jest.fn(() => baseTask),
+            progress: jest.fn(() => baseTask),
+            done: jest.fn((handler: DoneHandler) => {
+              baseTask._done = handler;
+              return baseTask;
+            }),
+            error: jest.fn(() => baseTask),
+          });
+          return idMap[spec.url];
+        }
+      );
+      (exists as jest.Mock).mockReturnValue(true);
+
+      await queue.init();
+      await queue.setQueue([
+        "http://foo.com",
+        "http://moo.com",
+        "http://boo.com",
+      ]);
+
+      idMap["http://foo.com"]._done!();
+      idMap["http://boo.com"]._done!();
+
+      const res = await queue.getQueueStatus();
+      expect(res).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "http://foo.com", complete: true }),
+          expect.objectContaining({ url: "http://boo.com", complete: true }),
+          expect.objectContaining({ url: "http://moo.com", complete: false }),
+        ])
+      );
+      expect(res.length).toEqual(3);
+    });
+
+    it("it should not return lazy-deleted files", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const idMap: { [url: string]: TaskWithHandlers } = {};
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }): Partial<TaskWithHandlers> => {
+          const baseTask = mock<TaskWithHandlers>();
+
+          console.log(spec.id, spec.url);
+          idMap[spec.url] = Object.assign(baseTask, {
+            ...baseTask,
+            id: spec.id,
+            begin: jest.fn(() => baseTask),
+            progress: jest.fn(() => baseTask),
+            done: jest.fn((handler: DoneHandler) => {
+              baseTask._done = handler;
+              return baseTask;
+            }),
+            error: jest.fn(() => baseTask),
+          });
+          return idMap[spec.url];
+        }
+      );
+      (exists as jest.Mock).mockReturnValue(true);
+
+      await queue.init();
+      await queue.setQueue([
+        "http://foo.com",
+        "http://moo.com",
+        "http://boo.com",
+      ]);
+      idMap["http://foo.com"]._done!();
+      idMap["http://boo.com"]._done!();
+      await queue.removeUrl("http://boo.com");
+
+      const res = await queue.getQueueStatus();
+      expect(res).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "http://foo.com", complete: true }),
+          expect.objectContaining({ url: "http://moo.com", complete: false }),
+        ])
+      );
+      expect(res.length).toEqual(2);
     });
   });
 
   describe("Lazy deletion", () => {
     it("should not immediately delete lazy-deletions", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
-      let assignedId = "tbd";
-
-      (download as jest.Mock).mockImplementationOnce((spec: { id: string }) => {
-        assignedId = spec.id;
-        return {
-          ...task,
-          id: assignedId,
-        };
-      });
 
       await queue.init();
       await queue.addUrl("http://foo.com");
@@ -658,17 +640,6 @@ describe("DownloadQueue", () => {
 
     it("should delete only next-init lazy deletions during init", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       let assignedId = "tbd";
 
       (download as jest.Mock).mockImplementation(
@@ -698,22 +669,10 @@ describe("DownloadQueue", () => {
       ]);
 
       jest.runAllTimers(); // Or else the test hangs on boo!
-      (download as jest.Mock).mockClear();
     });
 
     it("should delete lazy deletions on time", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       const urlsToIds: { [url: string]: string } = {
         "http://foo.com": "foo",
         "http://boo.com": "boo",
@@ -770,32 +729,10 @@ describe("DownloadQueue", () => {
           `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${urlsToIds["http://moo.com"]}`
         )
       );
-
-      (download as jest.Mock).mockClear();
     });
 
     it("should revive re-added lazy-deletions", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
-      let assignedId = "tbd";
-
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
-        assignedId = spec.id;
-        return {
-          ...task,
-          id: assignedId,
-        };
-      });
 
       await queue.init();
       await queue.addUrl("http://foo.com");
@@ -809,30 +746,14 @@ describe("DownloadQueue", () => {
 
       await queue.addUrl("http://foo.com");
       expect(download).toHaveBeenCalledTimes(2);
-
-      (download as jest.Mock).mockClear();
     });
   });
 
   describe("Pause / resume", () => {
     it("should start paused if requested", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const backTask: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => backTask),
-        progress: jest.fn(() => backTask),
-        done: jest.fn(() => backTask),
-        error: jest.fn(() => backTask),
-        resume: jest.fn(() => backTask),
-        pause: jest.fn(() => backTask),
-        stop: jest.fn(() => backTask),
-      };
 
-      (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
-        (): DownloadTask[] => [backTask]
-      );
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -841,55 +762,18 @@ describe("DownloadQueue", () => {
         createTime: Date.now() - 1000,
       });
       await queue.init(false);
-      expect(backTask.resume).not.toHaveBeenCalled();
-      expect(backTask.pause).toHaveBeenCalled();
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(task.pause).toHaveBeenCalledTimes(1); // for the revived download
       expect(download).not.toHaveBeenCalled();
 
-      (download as jest.Mock).mockImplementation(
-        (spec: { id: string; url: string }) => ({
-          ...baseTask,
-          id: spec.id,
-          begin: jest.fn(() => backTask),
-          progress: jest.fn(() => backTask),
-          done: jest.fn(() => backTask),
-          error: jest.fn(() => backTask),
-          pause: jest.fn(() => baseTask),
-        })
-      );
+      (download as jest.Mock).mockReturnValue(task);
 
       await queue.addUrl("http://boo.com");
-      expect(backTask.pause).toHaveBeenCalledTimes(1);
+      expect(task.pause).toHaveBeenCalledTimes(2); // for the added download
     });
 
     it("should pause/resume everything when asked", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        pause: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
-      const urlsToIds: { [url: string]: string } = {
-        "http://foo.com": "foo",
-        "http://boo.com": "boo",
-        "http://moo.com": "moo",
-      };
-
-      (download as jest.Mock).mockImplementation(
-        (spec: { id: string; url: string }) => {
-          urlsToIds[spec.url] = spec.id;
-          return {
-            ...task,
-            id: spec.id,
-          };
-        }
-      );
 
       await queue.init();
       await queue.addUrl("http://foo.com");
@@ -911,8 +795,6 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledTimes(3); // no change expected here
       expect(task.pause).toHaveBeenCalledTimes(3); // no change here either
       expect(task.resume).toHaveBeenCalledTimes(3);
-
-      (download as jest.Mock).mockClear();
     });
   });
 
@@ -928,17 +810,6 @@ describe("DownloadQueue", () => {
 
     it("should give the right URL depending on download status", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
-      const baseTask = mock<DownloadTask>();
-      const task: DownloadTask = {
-        ...baseTask,
-        id: "foo",
-        begin: jest.fn(() => task),
-        progress: jest.fn(() => task),
-        done: jest.fn(() => task),
-        error: jest.fn(() => task),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
       let fooPath = "tbd";
 
       (download as jest.Mock).mockImplementation(
@@ -968,9 +839,6 @@ describe("DownloadQueue", () => {
 
       expect(fooU).toBe(fooPath);
       expect(booU).toBe("http://boo.com");
-
-      (download as jest.Mock).mockClear();
-      (exists as jest.Mock).mockClear();
     });
 
     it("should call handlers for all cases", async () => {
