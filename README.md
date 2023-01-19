@@ -8,6 +8,13 @@
 [![Commitizen Friendly][commitizen-img]][commitizen-url]
 [![Semantic Release][semantic-release-img]][semantic-release-url]
 
+Automatically download files from urls, even in the background, and keep them locally cached with little headache or babysitting.
+* Enhances `downloadFile` from `react-native-fs` by supporting background downloads on iOS (i.e. downloads will continue even if you close your app) by using `react-native-background-downloader`.
+* Automatically resumes suspended downloads when you next launch your app.
+* Reconciles all your cached/downloaded files with a set of URLs you can change at any time. This way, you can just manage the list of URLs you want at any time, and everything else is taken care of for you.
+* Supports lazy deletion.
+* Automation-tested with 100% code coverage.
+
 ## Install
 
 First install peer dependencies:
