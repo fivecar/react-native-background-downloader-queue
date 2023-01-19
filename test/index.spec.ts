@@ -135,6 +135,18 @@ describe("DownloadQueue", () => {
       await expect(queue.init()).rejects.toThrow();
     });
 
+    it("initializes ok without download dir", async () => {
+      // The first time a user runs, readdir will throw because our download
+      // directory hasn't been created. We should handle that.
+      (readdir as jest.Mock).mockImplementationOnce(() => {
+        throw new Error("dir not found!");
+      });
+
+      const queue = new DownloadQueue();
+
+      await expect(queue.init()).resolves.not.toThrow();
+    });
+
     it("deletes files without specs upon init", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
 
@@ -815,6 +827,7 @@ describe("DownloadQueue", () => {
         error: jest.fn(() => backTask),
         resume: jest.fn(() => backTask),
         pause: jest.fn(() => backTask),
+        stop: jest.fn(() => backTask),
       };
 
       (checkForExistingDownloads as jest.Mock).mockImplementationOnce(
@@ -831,6 +844,21 @@ describe("DownloadQueue", () => {
       expect(backTask.resume).not.toHaveBeenCalled();
       expect(backTask.pause).toHaveBeenCalled();
       expect(download).not.toHaveBeenCalled();
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }) => ({
+          ...baseTask,
+          id: spec.id,
+          begin: jest.fn(() => backTask),
+          progress: jest.fn(() => backTask),
+          done: jest.fn(() => backTask),
+          error: jest.fn(() => backTask),
+          pause: jest.fn(() => baseTask),
+        })
+      );
+
+      await queue.addUrl("http://boo.com");
+      expect(backTask.pause).toHaveBeenCalledTimes(1);
     });
 
     it("should pause/resume everything when asked", async () => {
