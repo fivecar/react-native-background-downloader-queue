@@ -47,8 +47,8 @@ export default class DownloadQueue {
   private active: boolean;
 
   /**
-   * Creates a new instance of DownloadQueue. You must call init before actually
-   * using it.
+   * Creates a new instance of DownloadQueue. You must call init after this,
+   * before calling any other functions.
    *
    * @param handlers (optional) Callbacks for events
    * @param domain (optional) By default, AsyncStorage keys and RNFS
