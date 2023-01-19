@@ -1,7 +1,7 @@
 {
-  "name": "react-native-background-download-queue",
-  "version": "1.0.0",
-  "description": "A wifi-aware background downloader that maintains a queue of files",
+  "name": "react-native-background-downloader-queue",
+  "version": "1.3.2",
+  "description": "A background downloader that works even when your app has quit, and maintains a queue of files so you don't have to babysit it.",
   "main": "./lib/index.js",
   "files": [
     "lib/**/*"
@@ -19,7 +19,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fivecar/react-native-background-download-queue.git"
+    "url": "git+https://github.com/fivecar/react-native-background-downloader-queue.git"
   },
   "license": "MIT",
   "author": {
@@ -31,12 +31,17 @@
     "node": ">=12.0"
   },
   "keywords": [
-    "stuff"
+    "download",
+    "downloader",
+    "background",
+    "files",
+    "react-native",
+    "queue"
   ],
   "bugs": {
-    "url": "https://github.com/fivecar/react-native-background-download-queue/issues"
+    "url": "https://github.com/fivecar/react-native-background-downloader-queue/issues"
   },
-  "homepage": "https://github.com/fivecar/react-native-background-download-queue#readme",
+  "homepage": "https://github.com/fivecar/react-native-background-downloader-queue#readme",
   "devDependencies": {
     "@ryansonshine/commitizen": "^4.2.8",
     "@ryansonshine/cz-conventional-changelog": "^3.3.4",

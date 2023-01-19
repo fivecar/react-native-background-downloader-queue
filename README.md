@@ -1,4 +1,4 @@
-# react-native-background-download-queue
+# react-native-background-downloader-queue
 
 [![npm package][npm-img]][npm-url]
 [![Build Status][build-img]][build-url]
@@ -25,17 +25,17 @@ First install peer dependencies:
 Once those are done, install this package:
 
 ```bash
-npm install react-native-background-download-queue
+npm install react-native-background-downloader-queue
 ```
 or
 ```bash
-yarn add react-native-background-download-queue
+yarn add react-native-background-downloader-queue
 ```
 
 ## Example
 
 ```Typescript
-import DownloadQueue from "react-native-background-download-queue";
+import DownloadQueue from "react-native-background-downloader-queue";
 
 new DownloadQueue({
   onBegin: (url, bytes) => console.log("Download started", url, bytes),
@@ -97,16 +97,16 @@ Resumes all active downloads that were previously paused. If you `init()` with `
 Gets a remote or local url, preferring to the local path when possible. If the local file hasn't yet been downloaded, returns the remote url.
 
 
-[build-img]:https://github.com/fivecar/react-native-background-download-queue/actions/workflows/release.yml/badge.svg
-[build-url]:https://github.com/fivecar/react-native-background-download-queue/actions/workflows/release.yml
-[downloads-img]:https://img.shields.io/npm/dt/react-native-background-download-queue
-[downloads-url]:https://www.npmtrends.com/react-native-background-download-queue
-[npm-img]:https://img.shields.io/npm/v/react-native-background-download-queue
-[npm-url]:https://www.npmjs.com/package/react-native-background-download-queue
-[issues-img]:https://img.shields.io/github/issues/fivecar/react-native-background-download-queue
-[issues-url]:https://github.com/fivecar/react-native-background-download-queue/issues
-[codecov-img]:https://codecov.io/gh/fivecar/react-native-background-download-queue/branch/main/graph/badge.svg
-[codecov-url]:https://codecov.io/gh/fivecar/react-native-background-download-queue
+[build-img]:https://github.com/fivecar/react-native-background-downloader-queue/actions/workflows/release.yml/badge.svg
+[build-url]:https://github.com/fivecar/react-native-background-downloader-queue/actions/workflows/release.yml
+[downloads-img]:https://img.shields.io/npm/dt/react-native-background-downloader-queue
+[downloads-url]:https://www.npmtrends.com/react-native-background-downloader-queue
+[npm-img]:https://img.shields.io/npm/v/react-native-background-downloader-queue
+[npm-url]:https://www.npmjs.com/package/react-native-background-downloader-queue
+[issues-img]:https://img.shields.io/github/issues/fivecar/react-native-background-downloader-queue
+[issues-url]:https://github.com/fivecar/react-native-background-downloader-queue/issues
+[codecov-img]:https://codecov.io/gh/fivecar/react-native-background-downloader-queue/branch/main/graph/badge.svg
+[codecov-url]:https://codecov.io/gh/fivecar/react-native-background-downloader-queue
 [semantic-release-img]:https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg
 [semantic-release-url]:https://github.com/semantic-release/semantic-release
 [commitizen-img]:https://img.shields.io/badge/commitizen-friendly-brightgreen.svg
