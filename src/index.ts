@@ -46,6 +46,17 @@ export default class DownloadQueue {
   private handlers?: DownloadQueueHandlers;
   private active: boolean;
 
+  /**
+   * Creates a new instance of DownloadQueue. You must call init before actually
+   * using it.
+   *
+   * @param handlers (optional) Callbacks for events
+   * @param domain (optional) By default, AsyncStorage keys and RNFS
+   *      filenames are prefixed with "DownloadQueue/main". If you want to use
+   *      something other than "main", pass it here. This is commonly used to
+   *      manage different queues for different users (e.g. you can use userId
+   *      as the domain).
+   */
   constructor(handlers?: DownloadQueueHandlers, domain = "main") {
     this.domain = domain;
     this.specs = [];
