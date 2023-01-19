@@ -1,6 +1,6 @@
 {
   "name": "react-native-background-download-queue",
-  "version": "0.0.0-development",
+  "version": "1.0.0",
   "description": "A wifi-aware background downloader that maintains a queue of files",
   "main": "./lib/index.js",
   "files": [
