@@ -21,8 +21,10 @@ interface Spec {
   createTime: number;
 }
 
-function basePath() {
-  return `${RNFS.DocumentDirectoryPath}/DownloadQueue`;
+export interface DownloadQueueStatus {
+  url: string;
+  path: string; // Path to the file on disk
+  complete: boolean;
 }
 
 export interface DownloadQueueHandlers {
@@ -294,6 +296,36 @@ export default class DownloadQueue {
   }
 
   /**
+   * Returns the status of all urls in the queue, excluding urls marked for lazy
+   * deletion.
+   *
+   * @returns urls, paths to local files, and whether the file has been
+   *    completely downloaded. If `!complete`, the file may be only partially
+   *    downloaded.
+   */
+  async getQueueStatus(): Promise<DownloadQueueStatus[]> {
+    this.verifyInitialized();
+
+    const taskIds = new Set(this.tasks.map(task => task.id));
+    const liveSpecs = this.specs.filter(spec => spec.createTime > 0);
+
+    return await Promise.all(
+      liveSpecs.map(async (spec: Spec): Promise<DownloadQueueStatus> => {
+        // Not all files on disk are necessarily complete (they could be partially
+        // downloaded). So filter by existence of a task, which suggests it's not
+        // been resolved yet.
+        const complete =
+          !taskIds.has(spec.id) && (await RNFS.exists(spec.path));
+        return {
+          url: spec.url,
+          path: spec.path,
+          complete,
+        };
+      })
+    );
+  }
+
+  /**
    * Pauses all active downloads. Most used to implement wifi-only downloads,
    * by pausing when NetInfo reports a non-wifi connection.
    */
@@ -448,4 +480,8 @@ export default class DownloadQueue {
 
 function roundToNextMinute(timestamp: number) {
   return Math.ceil(timestamp / 60000) * 60000;
+}
+
+function basePath() {
+  return `${RNFS.DocumentDirectoryPath}/DownloadQueue`;
 }
