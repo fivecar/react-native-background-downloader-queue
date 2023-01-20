@@ -19,6 +19,13 @@ interface Spec {
    * launch. If negative, the absolute value is the time it should be deleted.
    */
   createTime: number;
+  // `finished` is true iff the download completed (via `done()`). Files can
+  // exist at path even during the middle of a download, so you need a separate
+  // flag to know you're done. Finally, don't always count on this to tell you
+  // that the file still exists on disk; there are times, at least in the
+  // simulator, when files on the virtual disk get flushed (e.g. on new build
+  // installs).
+  finished: boolean;
 }
 
 export interface DownloadQueueStatus {
@@ -122,11 +129,9 @@ export default class DownloadQueue {
       }
     });
 
-    // Now start downloads for specs that don't have a task or a file already
+    // Now start downloads for specs that haven't finished
     const specsToDownload = this.specs.filter(
-      spec =>
-        !existingTasks.some(task => task.id === spec.id) &&
-        !dirFilenames.includes(spec.id)
+      spec => !existingTasks.some(task => task.id === spec.id) && !spec.finished
     );
     if (specsToDownload.length) {
       specsToDownload.forEach(spec => this.start(spec));
@@ -138,7 +143,13 @@ export default class DownloadQueue {
     );
     if (orphanedFiles.length) {
       await Promise.all(
-        orphanedFiles.map(filename => RNFS.unlink(this.pathFromId(filename)))
+        orphanedFiles.map(filename => {
+          try {
+            return RNFS.unlink(this.pathFromId(filename));
+          } catch {
+            // Ignore errors
+          }
+        })
       );
     }
 
@@ -196,6 +207,7 @@ export default class DownloadQueue {
       url,
       path: this.pathFromId(id),
       createTime: Date.now(),
+      finished: false,
     };
 
     // Do this first, before starting the download, so that we don't leave any
@@ -278,7 +290,9 @@ export default class DownloadQueue {
       this.specs.filter(spec => spec.createTime > 0).map(spec => spec.url)
     );
     const urlsToAdd = urls.filter(url => !liveUrls.has(url));
-    const specsToRemove = this.specs.filter(spec => !urlSet.has(spec.url));
+    const specsToRemove = this.specs.filter(
+      spec => !urlSet.has(spec.url) && spec.createTime > 0
+    );
     const urlsToRemove = specsToRemove.map(spec => spec.url);
 
     // We could create logic that's more efficient than this (e.g. by bundling
@@ -306,16 +320,16 @@ export default class DownloadQueue {
   async getQueueStatus(): Promise<DownloadQueueStatus[]> {
     this.verifyInitialized();
 
-    const taskIds = new Set(this.tasks.map(task => task.id));
     const liveSpecs = this.specs.filter(spec => spec.createTime > 0);
 
     return await Promise.all(
       liveSpecs.map(async (spec: Spec): Promise<DownloadQueueStatus> => {
-        // Not all files on disk are necessarily complete (they could be partially
-        // downloaded). So filter by existence of a task, which suggests it's not
-        // been resolved yet.
-        const complete =
-          !taskIds.has(spec.id) && (await RNFS.exists(spec.path));
+        // Not all files on disk are necessarily complete (they could be
+        // partially downloaded). So filter by `finished`. But you also can't
+        // trust that completely because sometimes the disk files are flushed
+        // (e.g. on iOS simulator when installing a new build). So we
+        // double-check that the file actually exists.
+        const complete = spec.finished && (await RNFS.exists(spec.path));
         return {
           url: spec.url,
           path: spec.path,
@@ -359,7 +373,7 @@ export default class DownloadQueue {
 
     const spec = this.specs.find(spec => spec.url === url);
 
-    if (!spec) {
+    if (!spec || !spec.finished) {
       return url;
     }
 
@@ -399,12 +413,28 @@ export default class DownloadQueue {
       .progress((percent, bytes, total) => {
         this.handlers?.onProgress?.(url, percent, bytes, total);
       })
-      .done(() => {
+      .done(async () => {
+        const spec = this.specs.find(spec => spec.url === url);
+
+        if (!spec) {
+          // This in theory shouldn't ever happen -- basically the downloader
+          // telling us it's completed the download of a spec we've never heard
+          // about. But we're being extra careful here not to crash the client
+          // app if this ever happens.
+          return;
+        }
+
         this.removeTask(task.id);
-        this.handlers?.onDone?.(url);
+        spec.finished = true;
+        await this.kvfs.write(this.keyFromId(spec.id), spec);
+
         if (Platform.OS === "ios") {
           completeHandler(task.id);
         }
+
+        // Only notify the client once everything has completed successfully and
+        // our internal state is consistent.
+        this.handlers?.onDone?.(url);
       })
       .error(error => {
         this.removeTask(task.id);

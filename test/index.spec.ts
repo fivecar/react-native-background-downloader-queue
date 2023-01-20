@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { mock } from "jest-mock-extended";
 import KVFS from "key-value-file-system";
+import { Platform } from "react-native";
 import {
   BeginHandler,
   checkForExistingDownloads,
@@ -8,7 +9,7 @@ import {
   download,
   DownloadTask,
   ErrorHandler,
-  ProgressHandler
+  ProgressHandler,
 } from "react-native-background-downloader";
 import RNFS, { exists, readdir, unlink } from "react-native-fs";
 import DownloadQueue, { DownloadQueueHandlers } from "../src";
@@ -88,6 +89,12 @@ jest.mock("react-native-fs", () => {
   };
 });
 
+jest.mock("react-native", () => ({
+  Platform: {
+    OS: "ios",
+  },
+}));
+
 jest.useFakeTimers();
 jest.spyOn(global, "setTimeout");
 
@@ -113,8 +120,8 @@ async function advanceThroughNextTimersAndPromises() {
   await new Promise(jest.requireActual("timers").setImmediate);
 }
 
-function createBasicTask(): DownloadTask {
-  const baseTask = mock<DownloadTask>();
+function createBasicTask(): TaskWithHandlers {
+  const baseTask = mock<TaskWithHandlers>();
   return Object.assign(baseTask, {
     id: "foo",
     begin: jest.fn(() => baseTask),
@@ -808,14 +815,73 @@ describe("DownloadQueue", () => {
       expect(url).toBe("http://foo.com");
     });
 
+    it("should handle a case where spec is finished but file is missing", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      (download as jest.Mock).mockImplementation(_ =>
+        Object.assign(task, {
+          done: jest.fn((handler: DoneHandler) => {
+            task._done = handler;
+            return task;
+          }),
+        })
+      );
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      // Mark it finished... but RNFS will say the file's not there.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await task._done!();
+
+      const url = await queue.getAvailableUrl("http://foo.com");
+      expect(url).toBe("http://foo.com");
+    });
+
+    it("should download correctly on Android as well", async () => {
+      Platform.OS = "android";
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      (download as jest.Mock).mockImplementation(_ =>
+        Object.assign(task, {
+          done: jest.fn((handler: DoneHandler) => {
+            task._done = handler;
+            return task;
+          }),
+        })
+      );
+      (exists as jest.Mock).mockReturnValue(true);
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await task._done!();
+
+      const statuses = await queue.getQueueStatus();
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "http://foo.com", complete: true }),
+        ])
+      );
+      Platform.OS = "ios";
+    });
+
     it("should give the right URL depending on download status", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
+      const fooTask = createBasicTask();
       let fooPath = "tbd";
 
       (download as jest.Mock).mockImplementation(
         (spec: { id: string; url: string; destination: string }) => {
           if (spec.url === "http://foo.com") {
             fooPath = spec.destination;
+            return Object.assign(fooTask, {
+              done: jest.fn((handler: DoneHandler) => {
+                fooTask._done = handler;
+                return fooTask;
+              }),
+            });
           }
           return {
             ...task,
@@ -832,6 +898,13 @@ describe("DownloadQueue", () => {
       // Pretend we've downloaded only foo
       (exists as jest.Mock).mockImplementation(path => path === fooPath);
 
+      const unfinishedUrl = await queue.getAvailableUrl("http://foo.com");
+
+      expect(unfinishedUrl).toBe("http://foo.com");
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await fooTask._done!();
+
       const [fooU, booU] = await Promise.all([
         queue.getAvailableUrl("http://foo.com"),
         queue.getAvailableUrl("http://boo.com"),
@@ -839,6 +912,22 @@ describe("DownloadQueue", () => {
 
       expect(fooU).toBe(fooPath);
       expect(booU).toBe("http://boo.com");
+
+      const restartedQueue = new DownloadQueue(undefined, "mydomain");
+
+      await restartedQueue.init();
+      const [fooUR, statuses] = await Promise.all([
+        restartedQueue.getAvailableUrl("http://foo.com"),
+        restartedQueue.getQueueStatus(),
+      ]);
+
+      // Make sure the finished status is persisted
+      expect(fooUR).toBe(fooPath);
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "http://foo.com", complete: true }),
+        ])
+      );
     });
 
     it("should call handlers for all cases", async () => {
@@ -849,13 +938,12 @@ describe("DownloadQueue", () => {
         onError: jest.fn(),
       };
       const queue = new DownloadQueue(handlers, "mydomain");
-      const baseTask = mock<DownloadTask>();
       let beginner: BeginHandler;
       let progresser: ProgressHandler;
       let doner: DoneHandler;
       let errorer: ErrorHandler;
-      const task: DownloadTask = {
-        ...baseTask,
+
+      Object.assign(task, {
         id: "foo",
         begin: jest.fn(handler => {
           beginner = handler;
@@ -873,19 +961,7 @@ describe("DownloadQueue", () => {
           errorer = handler;
           return task;
         }),
-        resume: jest.fn(() => task),
-        stop: jest.fn(() => task),
-      };
-
-      (download as jest.Mock).mockImplementation(
-        (spec: { id: string; url: string; destination: string }) => {
-          return {
-            ...task,
-            id: spec.id,
-            path: spec.destination,
-          };
-        }
-      );
+      });
 
       await queue.init();
       await queue.addUrl("http://foo.com");
@@ -895,7 +971,7 @@ describe("DownloadQueue", () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       progresser!(0.5, 500, 1000);
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      doner!();
+      await doner!();
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       errorer!("foo", 500);
 
@@ -903,6 +979,33 @@ describe("DownloadQueue", () => {
       expect(handlers.onProgress).toHaveBeenCalledTimes(1);
       expect(handlers.onDone).toHaveBeenCalledTimes(1);
       expect(handlers.onError).toHaveBeenCalledTimes(1);
+    });
+
+    it("should throw when a rogue task gets done", async () => {
+      const handlers: DownloadQueueHandlers = {
+        onDone: jest.fn(),
+      };
+      const queue = new DownloadQueue(handlers, "mydomain");
+      let doner: DoneHandler;
+
+      Object.assign(task, {
+        id: "foo",
+        done: jest.fn(handler => {
+          doner = handler;
+          return task;
+        }),
+      });
+
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+      await queue.removeUrl("http://foo.com");
+
+      // Normally, done() shouldn't be called by the framework after a url has
+      // been removed (because removeUrl calls stop()). But we want to be extra
+      // careful not to crash or falsely say it's done.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await expect(doner!()).resolves.not.toThrow();
+      expect(handlers.onDone).not.toHaveBeenCalled();
     });
   });
 });
