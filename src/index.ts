@@ -28,6 +28,8 @@ interface Spec {
   finished: boolean;
 }
 
+const ERROR_RETRY_DELAY_MS = 60 * 1000;
+
 export interface DownloadQueueStatus {
   url: string;
   path: string; // Path to the file on disk
@@ -54,6 +56,8 @@ export default class DownloadQueue {
   private kvfs: KeyValueFileSystem;
   private handlers?: DownloadQueueHandlers;
   private active: boolean;
+  private erroredIds: Set<string>;
+  private errorTimer: NodeJS.Timeout | null;
 
   /**
    * Creates a new instance of DownloadQueue. You must call init after this,
@@ -74,6 +78,8 @@ export default class DownloadQueue {
     this.kvfs = new KeyValueFileSystem(AsyncStorage, "DownloadQueue");
     this.handlers = handlers;
     this.active = false;
+    this.erroredIds = new Set();
+    this.errorTimer = null;
   }
 
   /**
@@ -173,6 +179,11 @@ export default class DownloadQueue {
     this.specs = [];
     this.handlers = undefined;
     this.inited = false;
+    this.erroredIds.clear();
+    if (this.errorTimer) {
+      clearInterval(this.errorTimer);
+      this.errorTimer = null;
+    }
   }
 
   /**
@@ -194,7 +205,7 @@ export default class DownloadQueue {
           RNFS.exists(this.pathFromId(curSpec.id)),
           this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
         ]);
-        if (!fileExists) {
+        if (!curSpec.finished || !fileExists) {
           this.start(curSpec);
         }
       }
@@ -348,6 +359,11 @@ export default class DownloadQueue {
 
     this.active = false;
     this.tasks.forEach(task => void task.pause());
+
+    if (this.errorTimer) {
+      clearInterval(this.errorTimer);
+      this.errorTimer = null;
+    }
   }
 
   /**
@@ -360,6 +376,10 @@ export default class DownloadQueue {
 
     this.active = true;
     this.tasks.forEach(task => void task.resume());
+
+    if (this.erroredIds.size > 0) {
+      this.ensureErrorTimerOn();
+    }
   }
 
   /**
@@ -388,6 +408,12 @@ export default class DownloadQueue {
     if (taskIndex >= 0) {
       task = this.tasks[taskIndex];
       this.tasks.splice(taskIndex, 1);
+    }
+
+    this.erroredIds.delete(id);
+    if (this.erroredIds.size === 0 && this.errorTimer) {
+      clearInterval(this.errorTimer);
+      this.errorTimer = null;
     }
     return task;
   }
@@ -439,8 +465,32 @@ export default class DownloadQueue {
       .error(error => {
         this.removeTask(task.id);
         this.handlers?.onError?.(url, error);
+
+        this.erroredIds.add(task.id);
+        this.ensureErrorTimerOn();
       });
     this.tasks.push(task);
+  }
+
+  private ensureErrorTimerOn() {
+    if (!this.errorTimer) {
+      this.errorTimer = setInterval(() => {
+        this.retryErroredTasks();
+      }, ERROR_RETRY_DELAY_MS);
+    }
+  }
+
+  private retryErroredTasks() {
+    this.erroredIds.forEach(id => {
+      const task = this.tasks.find(task => task.id === id);
+      const spec = this.specs.find(spec => spec.id === id);
+
+      // If we've written our code correctly, spec should always be present
+      // if we have an errorId. But we're being extra paranoid here.
+      if (!task && spec && !spec.finished && spec.createTime > 0) {
+        this.start(spec);
+      }
+    });
   }
 
   private scheduleDeletions(toDelete: Spec[], basisTimestamp: number) {

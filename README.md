@@ -8,11 +8,13 @@
 [![Commitizen Friendly][commitizen-img]][commitizen-url]
 [![Semantic Release][semantic-release-img]][semantic-release-url]
 
-Automatically download files from urls, even in the background, and keep them locally cached with little headache or babysitting.
+Automatically download files from urls, even in the background, and keep them locally cached with no headache or babysitting. Robustly retries until successful.
 * Enhances `downloadFile` from `react-native-fs` by supporting background downloads on iOS (i.e. downloads will continue even if you close your app) by using `react-native-background-downloader`.
 * Automatically resumes suspended downloads when you next launch your app.
+* Automatically retries failed downloads until they succeed. This happens even if you restart your app, until it's ultimately successful.
 * Reconciles all your cached/downloaded files with a set of URLs you can change at any time. This way, you can just manage the list of URLs you want at any time, and everything else is taken care of for you.
 * Supports lazy deletion.
+* Supports easy implementation of wifi-only downloads if desired.
 * Automation-tested with 100% code coverage.
 
 ## Install
@@ -69,7 +71,7 @@ of download status changes:
 |`onBegin?: (url: string, totalBytes: number) => void` | Called when the download has begun and the total number of bytes expected is known.|
 |`onProgress?: (url: string, fractionWritten: number, bytesWritten: number, totalBytes: number) => void` | Called at most every 1.5 seconds for any file while it's downloading. `fractionWritten` is between 0.0 and 1.0|
 |`onDone?: (url: string) => void`| Called when the download has completed successfully.|
-|`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file.|
+|`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file. Note that this is mostly for you to communicate something to the user, or to do other housekeeping; DownloadQueue will automatically re-attempt the download every minute (while you're online) until it succeeds.|
 
 ### `async init(startActive = true): Promise<void>`
 

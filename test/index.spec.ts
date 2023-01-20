@@ -136,6 +136,16 @@ function createBasicTask(): TaskWithHandlers {
 
 let task = createBasicTask();
 
+async function expectPublicsToFail(queue: DownloadQueue) {
+  await expect(queue.addUrl("whatevs")).rejects.toThrow();
+  await expect(queue.removeUrl("whatevs")).rejects.toThrow();
+  await expect(queue.setQueue([])).rejects.toThrow();
+  await expect(queue.getQueueStatus()).rejects.toThrow();
+  expect(() => queue.pauseAll()).toThrow();
+  expect(() => queue.resumeAll()).toThrow();
+  await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
+}
+
 describe("DownloadQueue", () => {
   beforeEach(() => {
     // restore a few commonly-used functions between tests to avoid unexpected
@@ -157,15 +167,7 @@ describe("DownloadQueue", () => {
 
   describe("Initialization", () => {
     it("should throw when uninitialized", async () => {
-      const queue = new DownloadQueue();
-
-      await expect(queue.addUrl("whatevs")).rejects.toThrow();
-      await expect(queue.removeUrl("whatevs")).rejects.toThrow();
-      await expect(queue.setQueue([])).rejects.toThrow();
-      await expect(queue.getQueueStatus()).rejects.toThrow();
-      expect(() => queue.pauseAll()).toThrow();
-      expect(() => queue.resumeAll()).toThrow();
-      await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
+      await expectPublicsToFail(new DownloadQueue());
     });
 
     it("initializes when nothing's going on", async () => {
@@ -312,6 +314,18 @@ describe("DownloadQueue", () => {
       await queue.init();
       expect(task.resume).toHaveBeenCalledTimes(2);
     });
+
+    it("should refuse to work without re-init", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      await queue.init();
+      queue.terminate();
+
+      await expectPublicsToFail(queue);
+
+      await queue.init();
+      await expect(queue.addUrl("http://foo.com")).resolves.not.toThrow();
+    });
   });
 
   describe("Adding", () => {
@@ -368,13 +382,19 @@ describe("DownloadQueue", () => {
 
     it("shouldn't re-download revived spec if file already downloaded", async () => {
       const queue = new DownloadQueue(undefined, "mydomain");
+      let doner: DoneHandler | undefined;
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
-        return {
-          ...task,
-          id: spec.id,
-        };
-      });
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            done: (handler: DoneHandler) => {
+              doner = handler;
+              return task;
+            },
+          });
+        }
+      );
       await queue.init();
       await queue.addUrl("http://foo.com");
 
@@ -387,7 +407,15 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com");
 
       expect(exists).toHaveBeenCalledTimes(1);
-      expect(download).toHaveBeenCalledTimes(1); // Just the first time only
+      expect(download).toHaveBeenCalledTimes(2); // Because it hadn't finished
+
+      await doner!();
+      await queue.removeUrl("http://foo.com", 0);
+      await queue.addUrl("http://foo.com");
+
+      // Now that it's been downloaded, removing it for next launch and
+      // re-adding it shouldn't retrigger a download.
+      expect(download).toHaveBeenCalledTimes(2);
     });
 
     it("shouldn't re-download revived spec on relaunch if file already downloaded", async () => {
@@ -802,6 +830,143 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledTimes(3); // no change expected here
       expect(task.pause).toHaveBeenCalledTimes(3); // no change here either
       expect(task.resume).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe("Retrying errored downloads", () => {
+    it("should retry errored downloads", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+        Object.assign(task, {
+          id: spec.id,
+          done: jest.fn((handler: DoneHandler) => {
+            task._done = handler;
+            return task;
+          }),
+          error: (handler: ErrorHandler) => {
+            task._error = handler;
+            return task;
+          },
+        })
+      );
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      expect(download).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._error!("something went wrong", "500");
+      expect(jest.getTimerCount()).toBe(1); // The interval should be set
+
+      await advanceThroughNextTimersAndPromises();
+      expect(download).toHaveBeenCalledTimes(2); // Should have tried again
+
+      await advanceThroughNextTimersAndPromises();
+      // Previous task should still be active, so no more download() calls
+      expect(download).toHaveBeenCalledTimes(2);
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await task._done!();
+      // The interval should be cleared on successful downloads
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it("should only use one interval despite several errors", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+      const doneMap: { [id: string]: DoneHandler } = {};
+      const errMap: { [id: string]: ErrorHandler } = {};
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+        // You need local copies to maintain different ids per object
+        const localTask = createBasicTask();
+        return Object.assign(localTask, {
+          id: spec.id,
+          done: jest.fn((handler: DoneHandler) => {
+            doneMap[spec.id] = handler;
+            return localTask;
+          }),
+          error: (handler: ErrorHandler) => {
+            errMap[spec.id] = handler;
+            return localTask;
+          },
+        });
+      });
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+      await queue.addUrl("http://moo.com");
+
+      expect(jest.getTimerCount()).toBe(0);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      Object.values(errMap)[0]!("something went wrong", "500");
+      expect(jest.getTimerCount()).toBe(1); // The interval should be set
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      Object.values(errMap)[1]!("something else went wrong", "403");
+      expect(jest.getTimerCount()).toBe(1);
+
+      // Get downloads scheduled
+      await advanceThroughNextTimersAndPromises();
+
+      // Now pretend to finish one successfully.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      Object.values(doneMap)[0]!();
+      expect(jest.getTimerCount()).toBe(1); // Still need an interval the other.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      Object.values(doneMap)[1]!();
+      expect(jest.getTimerCount()).toBe(0); // Now finally done
+    });
+
+    it("should not be retrying while paused", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+        Object.assign(task, {
+          id: spec.id,
+          error: (handler: ErrorHandler) => {
+            task._error = handler;
+            return task;
+          },
+        })
+      );
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._error!("something went wrong", "500");
+      expect(jest.getTimerCount()).toBe(1); // The interval should be set
+
+      queue.pauseAll();
+      expect(jest.getTimerCount()).toBe(0);
+
+      queue.resumeAll();
+      expect(jest.getTimerCount()).toBe(1);
+
+      queue.terminate(); // Don't leave timers floating after this test
+    });
+
+    it("should cancel retries when terminated", async () => {
+      const queue = new DownloadQueue(undefined, "mydomain");
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+        Object.assign(task, {
+          id: spec.id,
+          error: (handler: ErrorHandler) => {
+            task._error = handler;
+            return task;
+          },
+        })
+      );
+      await queue.init();
+      await queue.addUrl("http://foo.com");
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._error!("something went wrong", "500");
+      expect(jest.getTimerCount()).toBe(1); // The interval should be set
+
+      queue.terminate();
+      expect(jest.getTimerCount()).toBe(0); // The interval should be set
     });
   });
 
