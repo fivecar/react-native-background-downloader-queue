@@ -1,4 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  addEventListener,
+  NetInfoState,
+  NetInfoSubscription,
+} from "@react-native-community/netinfo";
 import KeyValueFileSystem from "key-value-file-system";
 import { Platform } from "react-native";
 import {
@@ -48,53 +53,61 @@ export interface DownloadQueueHandlers {
   onError?: (url: string, error: any) => void;
 }
 
+export interface DownloadQueueOptions {
+  domain?: string;
+  handlers?: DownloadQueueHandlers;
+  netInfoAddEventListener?: typeof addEventListener;
+  startActive?: boolean;
+}
+
 export default class DownloadQueue {
-  private domain: string;
-  private specs: Spec[];
-  private tasks: DownloadTask[];
-  private inited;
-  private kvfs: KeyValueFileSystem;
-  private handlers?: DownloadQueueHandlers;
-  private active: boolean;
-  private erroredIds: Set<string>;
-  private errorTimer: NodeJS.Timeout | null;
+  private domain = "main";
+  private specs: Spec[] = [];
+  private tasks: DownloadTask[] = [];
+  private inited = false;
+  private kvfs: KeyValueFileSystem = new KeyValueFileSystem(
+    AsyncStorage,
+    "DownloadQueue"
+  );
+  private handlers?: DownloadQueueHandlers = undefined;
+  private active = true;
+  private erroredIds = new Set<string>();
+  private errorTimer: NodeJS.Timeout | null = null;
+  private netInfoUnsubscriber?: NetInfoSubscription;
+  private isConnected = true;
+  private isPausedByUser = false; // Whether the client called pauseAll()
 
   /**
-   * Creates a new instance of DownloadQueue. You must call init after this,
-   * before calling other functions.
+   * Gets everything started (e.g. reconstitutes state from storage and
+   * reconciles it with downloads that might have completed in the background,
+   * subscribes to events, etc). You must call this first.
    *
-   * @param handlers (optional) Callbacks for events
-   * @param domain (optional) By default, AsyncStorage keys and RNFS
-   *      filenames are prefixed with "DownloadQueue/main". If you want to use
-   *      something other than "main", pass it here. This is commonly used to
-   *      manage different queues for different users (e.g. you can use userId
-   *      as the domain).
+   * @param options (optional) Configuration for the queue
+   * @param options.handlers (optional) Callbacks for events
+   * @param options.domain (optional) By default, AsyncStorage keys and RNFS
+   * filenames are prefixed with "DownloadQueue/main". If you want to use
+   * something other than "main", pass it here. This is commonly used to
+   * manage different queues for different users (e.g. you can use userId
+   * as the domain).
+   * @param options.startActive (optional) Whether to start the queue in an
+   * active state where downloads will be started. If false, no downloads will
+   * begin until you call resumeAll().
+   * @param options.netInfoAddEventListener (optional) If you'd like
+   * DownloadQueue to pause downloads when the device is offline, pass this.
+   * Usually easiest to literally pass `NetInfo.addEventListener`.
    */
-  constructor(handlers?: DownloadQueueHandlers, domain = "main") {
-    this.domain = domain;
-    this.specs = [];
-    this.tasks = [];
-    this.inited = false;
-    this.kvfs = new KeyValueFileSystem(AsyncStorage, "DownloadQueue");
-    this.handlers = handlers;
-    this.active = false;
-    this.erroredIds = new Set();
-    this.errorTimer = null;
-  }
-
-  /**
-   * Reconstitutes state from storage and reconciles it with downloads that
-   * might have completed in the background. Always call this before using the
-   * rest of the class.
-   *
-   * @param startActive Whether to start the queue in an active state where
-   * downloads will be started. If false, no downloads will begin until you
-   * call resumeAll().
-   */
-  async init(startActive = true): Promise<void> {
+  async init({
+    domain = "main",
+    handlers = undefined,
+    netInfoAddEventListener = undefined,
+    startActive = true,
+  }: DownloadQueueOptions = {}): Promise<void> {
     if (this.inited) {
       throw new Error("DownloadQueue already initialized");
     }
+
+    this.domain = domain;
+    this.handlers = handlers;
 
     const [specData, existingTasks, dirFilenames] = await Promise.all([
       this.kvfs.readMulti<Spec>(`${this.keyFromId("")}*`),
@@ -164,6 +177,11 @@ export default class DownloadQueue {
       now
     );
 
+    this.isConnected = true; // Assume this until we're told differently.
+    this.netInfoUnsubscriber = netInfoAddEventListener?.(state => {
+      this.onNetInfoChanged(state);
+    });
+
     this.inited = true;
   }
 
@@ -183,6 +201,10 @@ export default class DownloadQueue {
     if (this.errorTimer) {
       clearInterval(this.errorTimer);
       this.errorTimer = null;
+    }
+    if (this.netInfoUnsubscriber) {
+      this.netInfoUnsubscriber();
+      this.netInfoUnsubscriber = undefined;
     }
   }
 
@@ -357,6 +379,11 @@ export default class DownloadQueue {
   pauseAll(): void {
     this.verifyInitialized();
 
+    this.isPausedByUser = true;
+    this.pauseAllInternal();
+  }
+
+  private pauseAllInternal(): void {
     this.active = false;
     this.tasks.forEach(task => void task.pause());
 
@@ -374,6 +401,11 @@ export default class DownloadQueue {
   resumeAll(): void {
     this.verifyInitialized();
 
+    this.isPausedByUser = false;
+    this.resumeAllInternal();
+  }
+
+  private resumeAllInternal() {
     this.active = true;
     this.tasks.forEach(task => void task.resume());
 
@@ -529,6 +561,24 @@ export default class DownloadQueue {
       })
     );
     this.specs = this.specs.filter(spec => !delIds.has(spec.id));
+  }
+
+  private onNetInfoChanged(state: NetInfoState) {
+    if (!!state.isConnected === this.isConnected) {
+      return;
+    }
+
+    this.isConnected = !!state.isConnected;
+
+    // We only ever pause/resume when the user hasn't themselves explicitly
+    // asked us to pause. If they have, we leave their wishes alone.
+    if (!this.isPausedByUser) {
+      if (this.isConnected) {
+        this.resumeAllInternal();
+      } else {
+        this.pauseAllInternal();
+      }
+    }
   }
 
   private async getDirFilenames() {

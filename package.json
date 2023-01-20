@@ -43,6 +43,7 @@
   },
   "homepage": "https://github.com/fivecar/react-native-background-downloader-queue#readme",
   "devDependencies": {
+    "@react-native-community/netinfo": "^9.3.7",
     "@ryansonshine/commitizen": "^4.2.8",
     "@ryansonshine/cz-conventional-changelog": "^3.3.4",
     "@types/jest": "^27.5.2",
