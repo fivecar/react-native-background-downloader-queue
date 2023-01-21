@@ -209,6 +209,7 @@ export default class DownloadQueue {
 
     this.specs = loadedSpecs.filter(spec => !deleteIds.has(spec.id));
     this.active = startActive;
+    this.isPausedByUser = !startActive;
 
     // First revive tasks that were working in the background
     existingTasks.forEach(task => {

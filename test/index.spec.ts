@@ -966,6 +966,28 @@ describe("DownloadQueue", () => {
       expect(task.pause).toHaveBeenCalledTimes(2);
     });
 
+    it("should respect the user's !startActive during network change", async () => {
+      const queue = new DownloadQueue();
+      await queue.init({
+        domain: "mydomain",
+        netInfoAddEventListener: addEventListener,
+        startActive: false,
+      });
+      await queue.addUrl("http://foo.com");
+      expect(task.pause).toHaveBeenCalledTimes(1);
+
+      netInfoHandler(createNetState(false));
+      netInfoHandler(createNetState(true));
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(task.pause).toHaveBeenCalledTimes(1); // no change!
+
+      queue.resumeAll();
+      expect(task.resume).toHaveBeenCalledTimes(1);
+      expect(task.pause).toHaveBeenCalledTimes(1); // no change!
+    });
+
+
+
     it("should unsubscribe when terminated", async () => {
       const queue = new DownloadQueue();
       const unsubscriber = jest.fn();
