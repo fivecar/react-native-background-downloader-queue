@@ -76,6 +76,13 @@ export interface DownloadQueueHandlers {
     totalBytes: number
   ) => void;
   onDone?: (url: string) => void;
+  /**
+   * This is async because `removeUrl` (and also `setQueue`, when it needs to
+   * remove some urls) will block until you return from this, giving you the
+   * opportunity in your app to remove any dependencies on the local file before
+   * it's deleted.
+   */
+  onWillRemove?: (url: string) => Promise<void>;
   onError?: (url: string, error: any) => void;
 }
 
@@ -352,8 +359,12 @@ export default class DownloadQueue {
     }
 
     const spec = this.specs[index];
-    const task = this.removeTask(spec.id);
 
+    // Block here to give caller the chance to remove any UI elements that might
+    // have depended on the local file being available.
+    await this.handlers?.onWillRemove?.(spec.url);
+
+    const task = this.removeTask(spec.id);
     if (task) {
       task.stop();
     }
