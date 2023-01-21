@@ -8,11 +8,13 @@
 [![Commitizen Friendly][commitizen-img]][commitizen-url]
 [![Semantic Release][semantic-release-img]][semantic-release-url]
 
-Automatically download files from urls, even in the background, and keep them locally cached with little headache or babysitting.
+Automatically download files from urls, even in the background, and keep them locally cached with no headache or babysitting. Robustly retries until successful. Supports wifi-only downloads as well.
 * Enhances `downloadFile` from `react-native-fs` by supporting background downloads on iOS (i.e. downloads will continue even if you close your app) by using `react-native-background-downloader`.
 * Automatically resumes suspended downloads when you next launch your app.
+* Automatically retries failed downloads until they succeed. This happens even if you restart your app, until it's ultimately successful.
 * Reconciles all your cached/downloaded files with a set of URLs you can change at any time. This way, you can just manage the list of URLs you want at any time, and everything else is taken care of for you.
 * Supports lazy deletion.
+* Supports easy implementation of wifi-only downloads if desired.
 * Automation-tested with 100% code coverage.
 
 ## Install
@@ -59,21 +61,28 @@ const localOrRemotePath = await downloader.getAvailableUrl("https://example.com/
 
 For full documentation, see the javaDoc style comments in the package which automatically come up in VS Code when you use this library.
 
-### `constructor(handlers?: DownloadQueueHandlers, domain = "main")`
+### `async init(options?: DownloadQueueOptions): Promise<void>`
 
-Creates a new instance of DownloadQueue. You must call init before actually using it. You can pass any of the following handlers if you want to be notified
-of download status changes:
+Gets everything started (e.g. reconstitutes state from storage and reconciles it with downloads that might have completed in the background, subscribes to events, etc). You must call this first.
+
+You can pass any of the following options, or nothing at all:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+|handlers|DownloadQueueHandlers|undefined|For any events you'd like to receive notifications about, you'll need to pass a handler here. More details in the next table.|
+|domain|string|"main"|By default, AsyncStorage keys and RNFS filenames are with DownloadQueue/main". If you want to use something other than "main", pass it here. This is commonly used to manage different queues for different users (e.g. you can use userId as the domain).|
+|startActive|boolean|true|Whether to start the queue in an active state where downloads will be started. If false, no downloads will begin until you call resumeAll().|
+|netInfoAddEventListener|(listener: (state: {isConnected: boolean \| null, type: string}) => void) => ()=> void|undefined|If you'd like DownloadQueue to pause downloads when the device is offline, pass this. Usually easiest to literally pass `NetInfo.addEventListener`.|
+|activeNetworkTypes| string[] | [] |The NetInfoStateType values for which downloads will be allowed. If you pass undefined or [], downloads will happen on all connection types. A common practice is to pass ["wifi", "ethernet"] if you want to help users avoid cellular data charges. As of @react-native-community/netinfo@9.3.7, valid values are "unknown", "none", "wifi", "cellular", "bluetooth", "ethernet", "wimax", "vpn", "other", "mixed".|
+
+Here are the optional notification handlers you can pass to be informed of download status changes:
 
 | Handler | Description |
 |---|---|
 |`onBegin?: (url: string, totalBytes: number) => void` | Called when the download has begun and the total number of bytes expected is known.|
 |`onProgress?: (url: string, fractionWritten: number, bytesWritten: number, totalBytes: number) => void` | Called at most every 1.5 seconds for any file while it's downloading. `fractionWritten` is between 0.0 and 1.0|
 |`onDone?: (url: string) => void`| Called when the download has completed successfully.|
-|`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file.|
-
-### `async init(startActive = true): Promise<void>`
-
-Reconstitutes state from storage and reconciles it with downloads that might have completed in the background. Always call this before using the rest of the class.
+|`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file. Note that this is mostly for you to communicate something to the user, or to do other housekeeping; DownloadQueue will automatically re-attempt the download every minute (while you're online) until it succeeds.|
 
 ### `terminate(): void`
 
@@ -108,7 +117,7 @@ Pauses all active downloads. Most used to implement wifi-only downloads, by paus
 
 ### `resumeAll(): void`
 
-Resumes all active downloads that were previously paused. If you `init()` with `startActive === false`, you'll want to call this at some point or else downloads will never happen.
+Resumes all active downloads that were previously paused. If you `init()` with `startActive === false`, you'll want to call this at some point or else downloads will never happen. Also, downloads will only proceed if the network connection type passes the `activeNetworkTypes` filter (which by default allows all connection types).
 
 ### `async getAvailableUrl(url: string): Promise<string>`
 

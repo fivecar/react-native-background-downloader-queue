@@ -19,7 +19,47 @@ interface Spec {
    * launch. If negative, the absolute value is the time it should be deleted.
    */
   createTime: number;
+  // `finished` is true iff the download completed (via `done()`). Files can
+  // exist at path even during the middle of a download, so you need a separate
+  // flag to know you're done. Finally, don't always count on this to tell you
+  // that the file still exists on disk; there are times, at least in the
+  // simulator, when files on the virtual disk get flushed (e.g. on new build
+  // installs).
+  finished: boolean;
 }
+
+const ERROR_RETRY_DELAY_MS = 60 * 1000;
+
+/**
+ * Derived directly from NetInfoState, but we don't wan to force you to use
+ * that package if you don't want. So we take just the subset of fields we
+ * actually use.
+ */
+export interface DownloadQueueNetInfoState {
+  /**
+   * NetInfo's isConnected. They insist on accepting the null.
+   */
+  isConnected: boolean | null;
+  /**
+   * This should ideally be "unknown" | "none" | "wifi" | "cellular" |
+   * "bluetooth" | "ethernet" | "wimax" | "vpn" | "other" | "mixed", to match
+   * NetInfoStateType. However, by locking into that right now, this library
+   * will break (Typescript-wise) if NetInfo adds new types of connections. So
+   * we compromise and just accept "string". You should only use valid values,
+   * though, if you want reasonable behavior from this library.
+   */
+  type: string;
+}
+
+export type DownloadQueueNetInfoUnsubscribe = () => void;
+/**
+ * A strict subset (in types) of NetInfo's addEventListener. Unless you
+ * implement your own network detection, you should probably just pass
+ * NetInfo.addEventListener.
+ */
+export type DownloadQueueAddEventListener = (
+  listener: (state: DownloadQueueNetInfoState) => void
+) => DownloadQueueNetInfoUnsubscribe;
 
 export interface DownloadQueueStatus {
   url: string;
@@ -39,49 +79,105 @@ export interface DownloadQueueHandlers {
   onError?: (url: string, error: any) => void;
 }
 
+/**
+ * Optional settings to pass to DownloadQueue.init()
+ */
+export interface DownloadQueueOptions {
+  /**
+   * By default, AsyncStorage keys and RNFS filenames are prefixed with
+   * "DownloadQueue/main". If you want to use something other than "main", pass
+   * it here. This is commonly used to manage different queues for different
+   * users (e.g. you can use userId as the domain).
+   */
+  domain?: string;
+  /**
+   * Callbacks for events related to ongoing downloads
+   */
+  handlers?: DownloadQueueHandlers;
+  /**
+   * If you'd like DownloadQueue to pause downloads when the device is offline,
+   * pass this. Usually easiest to literally pass `NetInfo.addEventListener`.
+   */
+  netInfoAddEventListener?: DownloadQueueAddEventListener;
+  /**
+   * The NetInfoStateType values for which downloads will be allowed. If you
+   * pass undefined or [], downloads will happen on all connection types. A
+   * common practice is to pass ["wifi", "ethernet"] if you want to help users
+   * avoid cell data charges. As of @react-native-community/netinfo@9.3.7,
+   * valid values are "unknown" | "none" | "wifi" | "cellular" | "bluetooth" |
+   * "ethernet" | "wimax" | "vpn" | "other" | "mixed".
+   */
+  activeNetworkTypes?: string[];
+  /**
+   * Whether to start the queue in an active state where downloads will be
+   * started. If false, no downloads will begin until you call resumeAll().
+   */
+  startActive?: boolean;
+}
+
+/**
+ * A queue for downloading files in the background. You should call init()
+ * before using any other methods. A suggested practice is to have one queue
+ * per userId, using that userId as the queue's `domain`, if you want downloads
+ * several users to occur concurrently and not interfere with each other.
+ */
 export default class DownloadQueue {
-  private domain: string;
-  private specs: Spec[];
-  private tasks: DownloadTask[];
-  private inited;
-  private kvfs: KeyValueFileSystem;
-  private handlers?: DownloadQueueHandlers;
-  private active: boolean;
+  private domain = "main";
+  private specs: Spec[] = [];
+  private tasks: DownloadTask[] = [];
+  private inited = false;
+  private kvfs: KeyValueFileSystem = new KeyValueFileSystem(
+    AsyncStorage,
+    "DownloadQueue"
+  );
+  private handlers?: DownloadQueueHandlers = undefined;
+  private active = true;
+  private erroredIds = new Set<string>();
+  private errorTimer: NodeJS.Timeout | null = null;
+  private netInfoUnsubscriber?: () => void;
+  private activeNetworkTypes: string[] = [];
+  private wouldAutoPause = false; // Whether we'd pause if the user didn't
+  private isPausedByUser = false; // Whether the client called pauseAll()
 
   /**
-   * Creates a new instance of DownloadQueue. You must call init after this,
-   * before calling other functions.
+   * Gets everything started (e.g. reconstitutes state from storage and
+   * reconciles it with downloads that might have completed in the background,
+   * subscribes to events, etc). You must call this first.
    *
-   * @param handlers (optional) Callbacks for events
-   * @param domain (optional) By default, AsyncStorage keys and RNFS
-   *      filenames are prefixed with "DownloadQueue/main". If you want to use
-   *      something other than "main", pass it here. This is commonly used to
-   *      manage different queues for different users (e.g. you can use userId
-   *      as the domain).
+   * @param options (optional) Configuration for the queue
+   * @param options.handlers (optional) Callbacks for events
+   * @param options.domain (optional) By default, AsyncStorage keys and RNFS
+   * filenames are prefixed with "DownloadQueue/main". If you want to use
+   * something other than "main", pass it here. This is commonly used to
+   * manage different queues for different users (e.g. you can use userId
+   * as the domain).
+   * @param options.startActive (optional) Whether to start the queue in an
+   * active state where downloads will be started. If false, no downloads will
+   * begin until you call resumeAll().
+   * @param options.netInfoAddEventListener (optional) If you'd like
+   * DownloadQueue to pause downloads when the device is offline, pass this.
+   * Usually easiest to literally pass `NetInfo.addEventListener`.
+   * @param options.activeNetworkTypes (optional) The NetInfoStateType values
+   * for which downloads will be allowed. If you pass undefined or [], downloads
+   * will happen on all connection types. A common practice is to pass ["wifi",
+   * "ethernet"] if you want to help users avoid cell data charges. As of
+   * @react-native-community/netinfo@9.3.7, valid values are "unknown" | "none"
+   * | "wifi" | "cellular" | "bluetooth" | "ethernet" | "wimax" | "vpn" |
+   * "other" | "mixed".
    */
-  constructor(handlers?: DownloadQueueHandlers, domain = "main") {
-    this.domain = domain;
-    this.specs = [];
-    this.tasks = [];
-    this.inited = false;
-    this.kvfs = new KeyValueFileSystem(AsyncStorage, "DownloadQueue");
-    this.handlers = handlers;
-    this.active = false;
-  }
-
-  /**
-   * Reconstitutes state from storage and reconciles it with downloads that
-   * might have completed in the background. Always call this before using the
-   * rest of the class.
-   *
-   * @param startActive Whether to start the queue in an active state where
-   * downloads will be started. If false, no downloads will begin until you
-   * call resumeAll().
-   */
-  async init(startActive = true): Promise<void> {
+  async init({
+    domain = "main",
+    handlers = undefined,
+    netInfoAddEventListener = undefined,
+    activeNetworkTypes = [],
+    startActive = true,
+  }: DownloadQueueOptions = {}): Promise<void> {
     if (this.inited) {
       throw new Error("DownloadQueue already initialized");
     }
+
+    this.domain = domain;
+    this.handlers = handlers;
 
     const [specData, existingTasks, dirFilenames] = await Promise.all([
       this.kvfs.readMulti<Spec>(`${this.keyFromId("")}*`),
@@ -122,11 +218,9 @@ export default class DownloadQueue {
       }
     });
 
-    // Now start downloads for specs that don't have a task or a file already
+    // Now start downloads for specs that haven't finished
     const specsToDownload = this.specs.filter(
-      spec =>
-        !existingTasks.some(task => task.id === spec.id) &&
-        !dirFilenames.includes(spec.id)
+      spec => !existingTasks.some(task => task.id === spec.id) && !spec.finished
     );
     if (specsToDownload.length) {
       specsToDownload.forEach(spec => this.start(spec));
@@ -138,13 +232,27 @@ export default class DownloadQueue {
     );
     if (orphanedFiles.length) {
       await Promise.all(
-        orphanedFiles.map(filename => RNFS.unlink(this.pathFromId(filename)))
+        orphanedFiles.map(filename => {
+          try {
+            return RNFS.unlink(this.pathFromId(filename));
+          } catch {
+            // Ignore errors
+          }
+        })
       );
     }
 
     this.scheduleDeletions(
       this.specs.filter(spec => -spec.createTime > now),
       now
+    );
+
+    this.wouldAutoPause = false;
+    this.activeNetworkTypes = activeNetworkTypes;
+    this.netInfoUnsubscriber = netInfoAddEventListener?.(
+      (state: DownloadQueueNetInfoState) => {
+        this.onNetInfoChanged(state);
+      }
     );
 
     this.inited = true;
@@ -162,6 +270,15 @@ export default class DownloadQueue {
     this.specs = [];
     this.handlers = undefined;
     this.inited = false;
+    this.erroredIds.clear();
+    if (this.errorTimer) {
+      clearInterval(this.errorTimer);
+      this.errorTimer = null;
+    }
+    if (this.netInfoUnsubscriber) {
+      this.netInfoUnsubscriber();
+      this.netInfoUnsubscriber = undefined;
+    }
   }
 
   /**
@@ -183,7 +300,7 @@ export default class DownloadQueue {
           RNFS.exists(this.pathFromId(curSpec.id)),
           this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
         ]);
-        if (!fileExists) {
+        if (!curSpec.finished || !fileExists) {
           this.start(curSpec);
         }
       }
@@ -196,6 +313,7 @@ export default class DownloadQueue {
       url,
       path: this.pathFromId(id),
       createTime: Date.now(),
+      finished: false,
     };
 
     // Do this first, before starting the download, so that we don't leave any
@@ -278,7 +396,9 @@ export default class DownloadQueue {
       this.specs.filter(spec => spec.createTime > 0).map(spec => spec.url)
     );
     const urlsToAdd = urls.filter(url => !liveUrls.has(url));
-    const specsToRemove = this.specs.filter(spec => !urlSet.has(spec.url));
+    const specsToRemove = this.specs.filter(
+      spec => !urlSet.has(spec.url) && spec.createTime > 0
+    );
     const urlsToRemove = specsToRemove.map(spec => spec.url);
 
     // We could create logic that's more efficient than this (e.g. by bundling
@@ -306,16 +426,16 @@ export default class DownloadQueue {
   async getQueueStatus(): Promise<DownloadQueueStatus[]> {
     this.verifyInitialized();
 
-    const taskIds = new Set(this.tasks.map(task => task.id));
     const liveSpecs = this.specs.filter(spec => spec.createTime > 0);
 
     return await Promise.all(
       liveSpecs.map(async (spec: Spec): Promise<DownloadQueueStatus> => {
-        // Not all files on disk are necessarily complete (they could be partially
-        // downloaded). So filter by existence of a task, which suggests it's not
-        // been resolved yet.
-        const complete =
-          !taskIds.has(spec.id) && (await RNFS.exists(spec.path));
+        // Not all files on disk are necessarily complete (they could be
+        // partially downloaded). So filter by `finished`. But you also can't
+        // trust that completely because sometimes the disk files are flushed
+        // (e.g. on iOS simulator when installing a new build). So we
+        // double-check that the file actually exists.
+        const complete = spec.finished && (await RNFS.exists(spec.path));
         return {
           url: spec.url,
           path: spec.path,
@@ -332,20 +452,45 @@ export default class DownloadQueue {
   pauseAll(): void {
     this.verifyInitialized();
 
+    this.isPausedByUser = true;
+    this.pauseAllInternal();
+  }
+
+  private pauseAllInternal(): void {
     this.active = false;
     this.tasks.forEach(task => void task.pause());
+
+    if (this.errorTimer) {
+      clearInterval(this.errorTimer);
+      this.errorTimer = null;
+    }
   }
 
   /**
    * Resumes all active downloads that were previously paused. If you init()
    * with startActive === false, you'll want to call this at some point or else
-   * downloads will never happen.
+   * downloads will never happen. Also, downloads will only proceed if the
+   * network connection type passes the `activeNetworkTypes` filter (which by
+   * default allows all connection types).
    */
   resumeAll(): void {
     this.verifyInitialized();
 
+    this.isPausedByUser = false;
+    if (!this.wouldAutoPause) {
+      // We only resume downloads if we weren't told otherwise to auto-pause
+      // based on network conditions.
+      this.resumeAllInternal();
+    }
+  }
+
+  private resumeAllInternal() {
     this.active = true;
     this.tasks.forEach(task => void task.resume());
+
+    if (this.erroredIds.size > 0) {
+      this.ensureErrorTimerOn();
+    }
   }
 
   /**
@@ -359,7 +504,7 @@ export default class DownloadQueue {
 
     const spec = this.specs.find(spec => spec.url === url);
 
-    if (!spec) {
+    if (!spec || !spec.finished) {
       return url;
     }
 
@@ -374,6 +519,12 @@ export default class DownloadQueue {
     if (taskIndex >= 0) {
       task = this.tasks[taskIndex];
       this.tasks.splice(taskIndex, 1);
+    }
+
+    this.erroredIds.delete(id);
+    if (this.erroredIds.size === 0 && this.errorTimer) {
+      clearInterval(this.errorTimer);
+      this.errorTimer = null;
     }
     return task;
   }
@@ -399,18 +550,58 @@ export default class DownloadQueue {
       .progress((percent, bytes, total) => {
         this.handlers?.onProgress?.(url, percent, bytes, total);
       })
-      .done(() => {
+      .done(async () => {
+        const spec = this.specs.find(spec => spec.url === url);
+
+        if (!spec) {
+          // This in theory shouldn't ever happen -- basically the downloader
+          // telling us it's completed the download of a spec we've never heard
+          // about. But we're being extra careful here not to crash the client
+          // app if this ever happens.
+          return;
+        }
+
         this.removeTask(task.id);
-        this.handlers?.onDone?.(url);
+        spec.finished = true;
+        await this.kvfs.write(this.keyFromId(spec.id), spec);
+
         if (Platform.OS === "ios") {
           completeHandler(task.id);
         }
+
+        // Only notify the client once everything has completed successfully and
+        // our internal state is consistent.
+        this.handlers?.onDone?.(url);
       })
       .error(error => {
         this.removeTask(task.id);
         this.handlers?.onError?.(url, error);
+
+        this.erroredIds.add(task.id);
+        this.ensureErrorTimerOn();
       });
     this.tasks.push(task);
+  }
+
+  private ensureErrorTimerOn() {
+    if (!this.errorTimer) {
+      this.errorTimer = setInterval(() => {
+        this.retryErroredTasks();
+      }, ERROR_RETRY_DELAY_MS);
+    }
+  }
+
+  private retryErroredTasks() {
+    this.erroredIds.forEach(id => {
+      const task = this.tasks.find(task => task.id === id);
+      const spec = this.specs.find(spec => spec.id === id);
+
+      // If we've written our code correctly, spec should always be present
+      // if we have an errorId. But we're being extra paranoid here.
+      if (!task && spec && !spec.finished && spec.createTime > 0) {
+        this.start(spec);
+      }
+    });
   }
 
   private scheduleDeletions(toDelete: Spec[], basisTimestamp: number) {
@@ -449,6 +640,28 @@ export default class DownloadQueue {
       })
     );
     this.specs = this.specs.filter(spec => !delIds.has(spec.id));
+  }
+
+  private onNetInfoChanged(state: DownloadQueueNetInfoState) {
+    const shouldAutoPause =
+      !state.isConnected ||
+      (this.activeNetworkTypes.length > 0 &&
+        !this.activeNetworkTypes.includes(state.type));
+
+    if (shouldAutoPause === this.wouldAutoPause) {
+      return;
+    }
+    this.wouldAutoPause = shouldAutoPause;
+
+    // We only ever pause/resume when the user hasn't themselves explicitly
+    // asked us to pause. If they have, we leave their wishes alone.
+    if (!this.isPausedByUser) {
+      if (shouldAutoPause) {
+        this.pauseAllInternal();
+      } else {
+        this.resumeAllInternal();
+      }
+    }
   }
 
   private async getDirFilenames() {
