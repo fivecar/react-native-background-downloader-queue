@@ -1376,6 +1376,37 @@ describe("DownloadQueue", () => {
       expect(handlers.onError).toHaveBeenCalledTimes(1);
     });
 
+    it("should call done handler with local path when finished", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onDone: jest.fn(),
+      };
+
+      let doner: DoneHandler | undefined;
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            done: (handler: DoneHandler) => {
+              doner = handler;
+              return task;
+            },
+          });
+        }
+      );
+      await queue.init({ domain: "mydomain", handlers });
+      await queue.addUrl("http://foo.com");
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await doner!();
+
+      expect(handlers.onDone).toHaveBeenCalledWith(
+        "http://foo.com",
+        `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`
+      );
+    });
+
     it("should throw when a rogue task gets done", async () => {
       const handlers: DownloadQueueHandlers = {
         onDone: jest.fn(),
