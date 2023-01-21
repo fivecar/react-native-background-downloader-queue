@@ -102,15 +102,19 @@ Removes a url record and any associated file that's been downloaded. Can optiona
 
 Sets the sum total of urls to keep in the queue. If previously-added urls don't show up here, they'll be removed. New urls will be added.
 
-### `async getQueueStatus(): Promise<DownloadQueueStatus[]>`
+### `async getStatus(url: string): Promise<DownloadQueueStatus | null>`
 
-Returns the status of all urls in the queue, excluding urls marked for lazy deletion.
+Returns a `DownloadQueueStatus` object reflecting the status of a url's download. If the url isn't in the queue (e.g. you've deleted it, or you've passed a random string), returns `null`.
 
 | Field | Type | Description  |
 |---|---|---|
 | url | string  | Original url given for the download |
 | path  | string  | Path to local file |
 | complete | boolean | Whether the file is completely downloaded. Note that if this is `false`, `path` may point to a file that either doesn't exist, or that is only partially downloaded. |
+
+### `async getQueueStatus(): Promise<DownloadQueueStatus[]>`
+
+Returns the status of all urls in the queue, excluding urls marked for lazy deletion.
 
 ### `pauseAll(): void`
 

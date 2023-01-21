@@ -428,7 +428,7 @@ export default class DownloadQueue {
   }
 
   /**
-   * Returns the status of all urls in the queue, excluding urls marked for lazy
+   * Returns the status of all urls in the queue, excluding urls marked for
    * deletion.
    *
    * @returns urls, paths to local files, and whether the file has been
@@ -455,6 +455,27 @@ export default class DownloadQueue {
         };
       })
     );
+  }
+
+  /**
+   * Returns the status of a single url in the queue, excluding urls marked for
+   * deletion.
+   */
+  async getStatus(url: string): Promise<DownloadQueueStatus | null> {
+    this.verifyInitialized();
+
+    const spec = this.specs.find(
+      spec => spec.url === url && spec.createTime > 0
+    );
+    if (!spec) {
+      return null;
+    }
+
+    return {
+      url: spec.url,
+      path: spec.path,
+      complete: spec.finished && (await RNFS.exists(spec.path)),
+    };
   }
 
   /**
