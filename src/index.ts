@@ -75,7 +75,7 @@ export interface DownloadQueueHandlers {
     bytesWritten: number,
     totalBytes: number
   ) => void;
-  onDone?: (url: string) => void;
+  onDone?: (url: string, localPath: string) => void;
   /**
    * This is async because `removeUrl` (and also `setQueue`, when it needs to
    * remove some urls) will block until you return from this, giving you the
@@ -582,7 +582,7 @@ export default class DownloadQueue {
 
         // Only notify the client once everything has completed successfully and
         // our internal state is consistent.
-        this.handlers?.onDone?.(url);
+        this.handlers?.onDone?.(url, spec.path);
       })
       .error(error => {
         this.removeTask(task.id);
