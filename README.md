@@ -114,7 +114,7 @@ Returns the status of all urls in the queue, excluding urls marked for lazy dele
 
 ### `pauseAll(): void`
 
-Pauses all active downloads. Most used to implement wifi-only downloads, by pausing when NetInfo reports a non-wifi connection.
+Pauses all active downloads. Note that if you just want to download on certain types of connections, you should instead use `activeNetworkTypes` in `init()`. For instance, to avoid cellular data charges, you might pass `activeNetworkTypes: ["wifi", "ethernet"]`.
 
 ### `resumeAll(): void`
 
