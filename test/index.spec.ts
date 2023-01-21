@@ -149,6 +149,7 @@ async function expectPublicsToFail(queue: DownloadQueue) {
   expect(() => queue.pauseAll()).toThrow();
   expect(() => queue.resumeAll()).toThrow();
   await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
+  await expect(queue.getStatus("whatevs")).rejects.toThrow();
 }
 
 let netInfoHandler: (state: NetInfoState) => void;
@@ -429,6 +430,7 @@ describe("DownloadQueue", () => {
       expect(exists).toHaveBeenCalledTimes(1);
       expect(download).toHaveBeenCalledTimes(2); // Because it hadn't finished
 
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       await doner!();
       await queue.removeUrl("http://foo.com", 0);
       await queue.addUrl("http://foo.com");
@@ -569,7 +571,72 @@ describe("DownloadQueue", () => {
     });
   });
 
-  describe("getQueue", () => {
+  describe("Getting queue status", () => {
+    it("it should return status on a single file", async () => {
+      const queue = new DownloadQueue();
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string }): Partial<TaskWithHandlers> =>
+          spec.url === "http://boo.com"
+            ? Object.assign(task, {
+                ...task,
+                id: spec.id,
+                done: jest.fn((handler: DoneHandler) => {
+                  task._done = handler;
+                  return task;
+                }),
+              })
+            : task
+      );
+      (exists as jest.Mock).mockReturnValue(true);
+
+      await queue.init({ domain: "mydomain" });
+      await queue.addUrl("http://foo.com");
+      await queue.addUrl("http://boo.com");
+
+      const res = await queue.getStatus("http://foo.com");
+      expect(res).toEqual(
+        expect.objectContaining({ url: "http://foo.com", complete: false })
+      );
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await task._done!();
+      const resBoo = await queue.getStatus("http://boo.com");
+      expect(resBoo).toEqual(
+        expect.objectContaining({ url: "http://boo.com", complete: true })
+      );
+    });
+
+    it("it should return the same status as a single or a group", async () => {
+      const queue = new DownloadQueue();
+
+      await queue.init({ domain: "mydomain" });
+      await queue.addUrl("http://foo.com");
+
+      const res = await queue.getStatus("http://foo.com");
+      expect(res).toEqual(
+        expect.objectContaining({ url: "http://foo.com", complete: false })
+      );
+
+      const arrRes = await queue.getQueueStatus();
+      expect(arrRes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ url: "http://foo.com", complete: false }),
+        ])
+      );
+    });
+
+    it("it should not return status on a single lazy-deleted file", async () => {
+      const queue = new DownloadQueue();
+
+      await queue.init({ domain: "mydomain" });
+      await queue.addUrl("http://foo.com");
+      await queue.removeUrl("http://foo.com", Date.now() + 3000);
+
+      const res = await queue.getStatus("http://foo.com");
+      expect(res).toEqual(null);
+    });
+
     it("it should return yet-to-be downloaded files", async () => {
       const queue = new DownloadQueue();
 
@@ -621,7 +688,9 @@ describe("DownloadQueue", () => {
         "http://boo.com",
       ]);
 
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://foo.com"]._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://boo.com"]._done!();
 
       const res = await queue.getQueueStatus();
@@ -666,7 +735,9 @@ describe("DownloadQueue", () => {
         "http://moo.com",
         "http://boo.com",
       ]);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://foo.com"]._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://boo.com"]._done!();
       await queue.removeUrl("http://boo.com");
 
