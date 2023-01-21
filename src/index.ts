@@ -1,9 +1,4 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import {
-  addEventListener,
-  NetInfoState,
-  NetInfoSubscription,
-} from "@react-native-community/netinfo";
 import KeyValueFileSystem from "key-value-file-system";
 import { Platform } from "react-native";
 import {
@@ -35,6 +30,34 @@ interface Spec {
 
 const ERROR_RETRY_DELAY_MS = 60 * 1000;
 
+/**
+ * Derived directly from NetInfoState, but we don't wan to force you to use
+ * that package if you don't want. So we take just the subset of fields we
+ * actually use.
+ */
+export interface DownloadQueueNetInfoState {
+  isConnected: boolean;
+  /**
+   * This should ideally be "unknown" | "none" | "wifi" | "cellular" |
+   * "bluetooth" | "ethernet" | "wimax" | "vpn" | "other" | "mixed", to match
+   * NetInfoStateType. However, by locking into that right now, this library
+   * will break (Typescript-wise) if NetInfo adds new types of connections. So
+   * we compromise and just accept "string". You should only use valid values,
+   * though, if you want reasonable behavior from this library.
+   */
+  type: string;
+}
+
+export type DownloadQueueNetInfoUnsubscribe = () => void;
+/**
+ * A strict subset (in types) of NetInfo's addEventListener. Unless you
+ * implement your own network detection, you should probably just pass
+ * NetInfo.addEventListener.
+ */
+export type DownloadQueueAddEventListener = (
+  listener: (state: DownloadQueueNetInfoState) => void
+) => DownloadQueueNetInfoUnsubscribe;
+
 export interface DownloadQueueStatus {
   url: string;
   path: string; // Path to the file on disk
@@ -53,13 +76,39 @@ export interface DownloadQueueHandlers {
   onError?: (url: string, error: any) => void;
 }
 
+/**
+ * Optional settings to pass to DownloadQueue.init()
+ */
 export interface DownloadQueueOptions {
+  /**
+   * By default, AsyncStorage keys and RNFS filenames are prefixed with
+   * "DownloadQueue/main". If you want to use something other than "main", pass
+   * it here. This is commonly used to manage different queues for different
+   * users (e.g. you can use userId as the domain).
+   */
   domain?: string;
+  /**
+   * Callbacks for events related to ongoing downloads
+   */
   handlers?: DownloadQueueHandlers;
-  netInfoAddEventListener?: typeof addEventListener;
+  /**
+   * If you'd like DownloadQueue to pause downloads when the device is offline,
+   * pass this. Usually easiest to literally pass `NetInfo.addEventListener`.
+   */
+  netInfoAddEventListener?: DownloadQueueAddEventListener;
+  /**
+   * Whether to start the queue in an active state where downloads will be
+   * started. If false, no downloads will begin until you call resumeAll().
+   */
   startActive?: boolean;
 }
 
+/**
+ * A queue for downloading files in the background. You should call init()
+ * before using any other methods. A suggested practice is to have one queue
+ * per userId, using that userId as the queue's `domain`, if you want downloads
+ * several users to occur concurrently and not interfere with each other.
+ */
 export default class DownloadQueue {
   private domain = "main";
   private specs: Spec[] = [];
@@ -73,7 +122,7 @@ export default class DownloadQueue {
   private active = true;
   private erroredIds = new Set<string>();
   private errorTimer: NodeJS.Timeout | null = null;
-  private netInfoUnsubscriber?: NetInfoSubscription;
+  private netInfoUnsubscriber?: () => void;
   private isConnected = true;
   private isPausedByUser = false; // Whether the client called pauseAll()
 
@@ -178,9 +227,11 @@ export default class DownloadQueue {
     );
 
     this.isConnected = true; // Assume this until we're told differently.
-    this.netInfoUnsubscriber = netInfoAddEventListener?.(state => {
-      this.onNetInfoChanged(state);
-    });
+    this.netInfoUnsubscriber = netInfoAddEventListener?.(
+      (state: DownloadQueueNetInfoState) => {
+        this.onNetInfoChanged(state);
+      }
+    );
 
     this.inited = true;
   }
@@ -563,7 +614,7 @@ export default class DownloadQueue {
     this.specs = this.specs.filter(spec => !delIds.has(spec.id));
   }
 
-  private onNetInfoChanged(state: NetInfoState) {
+  private onNetInfoChanged(state: DownloadQueueNetInfoState) {
     if (!!state.isConnected === this.isConnected) {
       return;
     }
