@@ -190,6 +190,12 @@ describe("DownloadQueue", () => {
       await expect(queue.init({ domain: "mydomain" })).resolves.not.toThrow();
     });
 
+    it("should initialize with defaults", async () => {
+      const queue = new DownloadQueue();
+
+      await queue.init();
+    });
+
     it("doesn't double-initialize", async () => {
       const queue = new DownloadQueue();
 
@@ -883,6 +889,7 @@ describe("DownloadQueue", () => {
         netInfoAddEventListener: addEventListener,
       });
       await queue.addUrl("http://foo.com");
+      expect(task.resume).not.toHaveBeenCalled();
 
       netInfoHandler(createNetState(false));
       expect(task.resume).not.toHaveBeenCalled();
@@ -891,6 +898,24 @@ describe("DownloadQueue", () => {
       netInfoHandler(createNetState(true));
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(task.pause).toHaveBeenCalledTimes(1);
+    });
+
+    it("should accept undefined activeNetworksTypes as []", async () => {
+      const queue = new DownloadQueue();
+      const state = createNetState(true);
+
+      await queue.init({
+        domain: "mydomain",
+        netInfoAddEventListener: addEventListener,
+        activeNetworkTypes: undefined,
+      });
+      await queue.addUrl("http://foo.com");
+      expect(task.resume).not.toHaveBeenCalled();
+
+      state.type = "cellular" as NetInfoStateType.cellular;
+      netInfoHandler(state);
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(task.pause).not.toHaveBeenCalled();
     });
 
     it("should respect the user's pause when before/after network change", async () => {
@@ -977,6 +1002,64 @@ describe("DownloadQueue", () => {
       expect(task.pause).toHaveBeenCalledTimes(1);
       netInfoHandler(createNetState(false));
       expect(task.pause).toHaveBeenCalledTimes(1); // Should be unchanged
+    });
+
+    it("should respect activeNetworkTypes", async () => {
+      const queue = new DownloadQueue();
+
+      await queue.init({
+        domain: "mydomain",
+        activeNetworkTypes: ["wifi", "ethernet"],
+        netInfoAddEventListener: addEventListener,
+      });
+      await queue.addUrl("http://foo.com");
+      expect(task.pause).not.toHaveBeenCalled();
+
+      const state = createNetState(true);
+
+      state.type = "wifi" as NetInfoStateType.wifi;
+      netInfoHandler(state);
+      expect(task.pause).not.toHaveBeenCalled();
+
+      state.type = "cellular" as NetInfoStateType.cellular;
+      netInfoHandler(state);
+      expect(task.pause).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      state.type = "ethernet" as NetInfoStateType.ethernet;
+      netInfoHandler(state);
+      expect(task.pause).toHaveBeenCalledTimes(1);
+      expect(task.resume).toHaveBeenCalledTimes(1);
+    });
+
+    it("should not resume when activeNetworkTypes forbids it", async () => {
+      const queue = new DownloadQueue();
+      const state = createNetState(true);
+
+      await queue.init({
+        domain: "mydomain",
+        activeNetworkTypes: ["wifi", "ethernet"],
+        netInfoAddEventListener: addEventListener,
+      });
+      await queue.addUrl("http://foo.com");
+
+      state.type = "cellular" as NetInfoStateType.cellular;
+      netInfoHandler(state);
+      expect(task.pause).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      queue.pauseAll();
+      expect(task.pause).toHaveBeenCalledTimes(2);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      queue.resumeAll();
+      expect(task.pause).toHaveBeenCalledTimes(2);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      state.type = "ethernet" as NetInfoStateType.ethernet;
+      netInfoHandler(state);
+      expect(task.pause).toHaveBeenCalledTimes(2);
+      expect(task.resume).toHaveBeenCalledTimes(1);
     });
   });
 

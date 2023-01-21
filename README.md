@@ -8,7 +8,7 @@
 [![Commitizen Friendly][commitizen-img]][commitizen-url]
 [![Semantic Release][semantic-release-img]][semantic-release-url]
 
-Automatically download files from urls, even in the background, and keep them locally cached with no headache or babysitting. Robustly retries until successful.
+Automatically download files from urls, even in the background, and keep them locally cached with no headache or babysitting. Robustly retries until successful. Supports wifi-only downloads as well.
 * Enhances `downloadFile` from `react-native-fs` by supporting background downloads on iOS (i.e. downloads will continue even if you close your app) by using `react-native-background-downloader`.
 * Automatically resumes suspended downloads when you next launch your app.
 * Automatically retries failed downloads until they succeed. This happens even if you restart your app, until it's ultimately successful.
@@ -72,7 +72,8 @@ You can pass any of the following options, or nothing at all:
 |handlers|DownloadQueueHandlers|undefined|For any events you'd like to receive notifications about, you'll need to pass a handler here. More details in the next table.|
 |domain|string|"main"|By default, AsyncStorage keys and RNFS filenames are with DownloadQueue/main". If you want to use something other than "main", pass it here. This is commonly used to manage different queues for different users (e.g. you can use userId as the domain).|
 |startActive|boolean|true|Whether to start the queue in an active state where downloads will be started. If false, no downloads will begin until you call resumeAll().|
-|netInfoAddEventListener|typeof NetInfo.addEventListener|undefined|If you'd like DownloadQueue to pause downloads when the device is offline, pass this. Usually easiest to literally pass `NetInfo.addEventListener`.|
+|netInfoAddEventListener|(listener: (state: {isConnected: boolean \| null, type: string}) => void) => ()=> void|undefined|If you'd like DownloadQueue to pause downloads when the device is offline, pass this. Usually easiest to literally pass `NetInfo.addEventListener`.|
+|activeNetworkTypes| string[] | [] |The NetInfoStateType values for which downloads will be allowed. If you pass undefined or [], downloads will happen on all connection types. A common practice is to pass ["wifi", "ethernet"] if you want to help users avoid cellular data charges. As of @react-native-community/netinfo@9.3.7, valid values are "unknown", "none", "wifi", "cellular", "bluetooth", "ethernet", "wimax", "vpn", "other", "mixed".|
 
 Here are the optional notification handlers you can pass to be informed of download status changes:
 
@@ -116,7 +117,7 @@ Pauses all active downloads. Most used to implement wifi-only downloads, by paus
 
 ### `resumeAll(): void`
 
-Resumes all active downloads that were previously paused. If you `init()` with `startActive === false`, you'll want to call this at some point or else downloads will never happen.
+Resumes all active downloads that were previously paused. If you `init()` with `startActive === false`, you'll want to call this at some point or else downloads will never happen. Also, downloads will only proceed if the network connection type passes the `activeNetworkTypes` filter (which by default allows all connection types).
 
 ### `async getAvailableUrl(url: string): Promise<string>`
 

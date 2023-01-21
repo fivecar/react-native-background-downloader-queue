@@ -36,7 +36,10 @@ const ERROR_RETRY_DELAY_MS = 60 * 1000;
  * actually use.
  */
 export interface DownloadQueueNetInfoState {
-  isConnected: boolean;
+  /**
+   * NetInfo's isConnected. They insist on accepting the null.
+   */
+  isConnected: boolean | null;
   /**
    * This should ideally be "unknown" | "none" | "wifi" | "cellular" |
    * "bluetooth" | "ethernet" | "wimax" | "vpn" | "other" | "mixed", to match
@@ -97,6 +100,15 @@ export interface DownloadQueueOptions {
    */
   netInfoAddEventListener?: DownloadQueueAddEventListener;
   /**
+   * The NetInfoStateType values for which downloads will be allowed. If you
+   * pass undefined or [], downloads will happen on all connection types. A
+   * common practice is to pass ["wifi", "ethernet"] if you want to help users
+   * avoid cell data charges. As of @react-native-community/netinfo@9.3.7,
+   * valid values are "unknown" | "none" | "wifi" | "cellular" | "bluetooth" |
+   * "ethernet" | "wimax" | "vpn" | "other" | "mixed".
+   */
+  activeNetworkTypes?: string[];
+  /**
    * Whether to start the queue in an active state where downloads will be
    * started. If false, no downloads will begin until you call resumeAll().
    */
@@ -123,7 +135,8 @@ export default class DownloadQueue {
   private erroredIds = new Set<string>();
   private errorTimer: NodeJS.Timeout | null = null;
   private netInfoUnsubscriber?: () => void;
-  private isConnected = true;
+  private activeNetworkTypes: string[] = [];
+  private wouldAutoPause = false; // Whether we'd pause if the user didn't
   private isPausedByUser = false; // Whether the client called pauseAll()
 
   /**
@@ -144,11 +157,19 @@ export default class DownloadQueue {
    * @param options.netInfoAddEventListener (optional) If you'd like
    * DownloadQueue to pause downloads when the device is offline, pass this.
    * Usually easiest to literally pass `NetInfo.addEventListener`.
+   * @param options.activeNetworkTypes (optional) The NetInfoStateType values
+   * for which downloads will be allowed. If you pass undefined or [], downloads
+   * will happen on all connection types. A common practice is to pass ["wifi",
+   * "ethernet"] if you want to help users avoid cell data charges. As of
+   * @react-native-community/netinfo@9.3.7, valid values are "unknown" | "none"
+   * | "wifi" | "cellular" | "bluetooth" | "ethernet" | "wimax" | "vpn" |
+   * "other" | "mixed".
    */
   async init({
     domain = "main",
     handlers = undefined,
     netInfoAddEventListener = undefined,
+    activeNetworkTypes = [],
     startActive = true,
   }: DownloadQueueOptions = {}): Promise<void> {
     if (this.inited) {
@@ -226,7 +247,8 @@ export default class DownloadQueue {
       now
     );
 
-    this.isConnected = true; // Assume this until we're told differently.
+    this.wouldAutoPause = false;
+    this.activeNetworkTypes = activeNetworkTypes;
     this.netInfoUnsubscriber = netInfoAddEventListener?.(
       (state: DownloadQueueNetInfoState) => {
         this.onNetInfoChanged(state);
@@ -447,13 +469,19 @@ export default class DownloadQueue {
   /**
    * Resumes all active downloads that were previously paused. If you init()
    * with startActive === false, you'll want to call this at some point or else
-   * downloads will never happen.
+   * downloads will never happen. Also, downloads will only proceed if the
+   * network connection type passes the `activeNetworkTypes` filter (which by
+   * default allows all connection types).
    */
   resumeAll(): void {
     this.verifyInitialized();
 
     this.isPausedByUser = false;
-    this.resumeAllInternal();
+    if (!this.wouldAutoPause) {
+      // We only resume downloads if we weren't told otherwise to auto-pause
+      // based on network conditions.
+      this.resumeAllInternal();
+    }
   }
 
   private resumeAllInternal() {
@@ -615,19 +643,23 @@ export default class DownloadQueue {
   }
 
   private onNetInfoChanged(state: DownloadQueueNetInfoState) {
-    if (!!state.isConnected === this.isConnected) {
+    const shouldAutoPause =
+      !state.isConnected ||
+      (this.activeNetworkTypes.length > 0 &&
+        !this.activeNetworkTypes.includes(state.type));
+
+    if (shouldAutoPause === this.wouldAutoPause) {
       return;
     }
-
-    this.isConnected = !!state.isConnected;
+    this.wouldAutoPause = shouldAutoPause;
 
     // We only ever pause/resume when the user hasn't themselves explicitly
     // asked us to pause. If they have, we leave their wishes alone.
     if (!this.isPausedByUser) {
-      if (this.isConnected) {
-        this.resumeAllInternal();
-      } else {
+      if (shouldAutoPause) {
         this.pauseAllInternal();
+      } else {
+        this.resumeAllInternal();
       }
     }
   }
