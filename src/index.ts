@@ -6,7 +6,6 @@ import {
   completeHandler,
   download,
   DownloadTask,
-  DownloadTaskState,
 } from "react-native-background-downloader";
 import RNFS from "react-native-fs";
 import uuid from "react-uuid";
@@ -700,7 +699,7 @@ export default class DownloadQueue {
       let shouldAddTask = true;
 
       switch (task.state) {
-        case DownloadTaskState.DOWNLOADING:
+        case "DOWNLOADING":
           // Since we're already downloading, make sure the client at least
           // gets a notification that it's started.
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
@@ -708,22 +707,22 @@ export default class DownloadQueue {
             task.pause();
           }
           break;
-        case DownloadTaskState.PAUSED:
+        case "PAUSED":
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
           if (this.active) {
             task.resume(); // Assuming checkForExistingDownloads() hasn't already
           }
           break;
-        case DownloadTaskState.DONE:
+        case "DONE":
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
           this.handlers?.onDone?.(spec.url, spec.path);
           shouldAddTask = false;
           break;
-        case DownloadTaskState.STOPPED:
+        case "STOPPED":
           this.start(spec);
           shouldAddTask = false;
           break;
-        case DownloadTaskState.FAILED:
+        case "FAILED":
         default:
           this.handlers?.onError?.(
             spec.url,
@@ -739,11 +738,7 @@ export default class DownloadQueue {
         this.addTask(spec.url, task);
       }
     } else {
-      if (
-        [DownloadTaskState.DOWNLOADING, DownloadTaskState.PAUSED].includes(
-          task.state
-        )
-      ) {
+      if (["DOWNLOADING", "PAUSED"].includes(task.state)) {
         task.stop();
       }
     }

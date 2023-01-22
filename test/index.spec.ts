@@ -13,9 +13,8 @@ import {
   DoneHandler,
   download,
   DownloadTask,
-  DownloadTaskState,
   ErrorHandler,
-  ProgressHandler
+  ProgressHandler,
 } from "react-native-background-downloader";
 import RNFS, { exists, readdir, stat, unlink } from "react-native-fs";
 import DownloadQueue, { DownloadQueueHandlers } from "../src";
@@ -270,7 +269,7 @@ describe("DownloadQueue", () => {
         onBegin: jest.fn(),
       };
 
-      task.state = "DOWNLOADING" as DownloadTaskState.DOWNLOADING;
+      task.state = "DOWNLOADING";
       task.totalBytes = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
@@ -297,7 +296,7 @@ describe("DownloadQueue", () => {
         onBegin: jest.fn(),
       };
 
-      task.state = "PAUSED" as DownloadTaskState.PAUSED;
+      task.state = "PAUSED";
       task.totalBytes = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
@@ -325,7 +324,7 @@ describe("DownloadQueue", () => {
         onDone: jest.fn(),
       };
 
-      task.state = "DONE" as DownloadTaskState.DONE;
+      task.state = "DONE";
       task.totalBytes = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
@@ -343,7 +342,10 @@ describe("DownloadQueue", () => {
         "http://foo.com",
         task.totalBytes
       );
-      expect(handlers.onDone).toHaveBeenCalledWith("http://foo.com", `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`);
+      expect(handlers.onDone).toHaveBeenCalledWith(
+        "http://foo.com",
+        `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`
+      );
       expect(download).not.toHaveBeenCalled();
     });
 
@@ -354,7 +356,7 @@ describe("DownloadQueue", () => {
         onDone: jest.fn(),
       };
 
-      task.state = "STOPPED" as DownloadTaskState.STOPPED;
+      task.state = "STOPPED";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
@@ -377,7 +379,7 @@ describe("DownloadQueue", () => {
         onError: jest.fn(),
       };
 
-      task.state = "FAILED" as DownloadTaskState.FAILED;
+      task.state = "FAILED";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
@@ -389,7 +391,7 @@ describe("DownloadQueue", () => {
 
       expect(jest.getTimerCount()).toEqual(0);
       await queue.init({ domain: "mydomain", handlers });
-      expect(jest.getTimerCount()).toEqual(1);  // error retry timer
+      expect(jest.getTimerCount()).toEqual(1); // error retry timer
 
       await advanceThroughNextTimersAndPromises();
       expect(download).toHaveBeenCalledTimes(1);
@@ -407,15 +409,14 @@ describe("DownloadQueue", () => {
       expect(task.stop).not.toHaveBeenCalled();
 
       queue.terminate();
-      task.state = "PAUSED" as DownloadTaskState.PAUSED;
+      task.state = "PAUSED";
       await queue.init({ domain: "mydomain" });
       expect(task.stop).toHaveBeenCalledTimes(1);
 
       queue.terminate();
-      task.state = "DOWNLOADING" as DownloadTaskState.DOWNLOADING;
+      task.state = "DOWNLOADING";
       await queue.init({ domain: "mydomain" });
       expect(task.stop).toHaveBeenCalledTimes(2);
-
     });
 
     it("starts downloads for specs without tasks or files", async () => {
@@ -442,7 +443,7 @@ describe("DownloadQueue", () => {
     it("should stop all active tasks", async () => {
       const queue = new DownloadQueue();
 
-      task.state = "DOWNLOADING" as DownloadTaskState.DOWNLOADING;
+      task.state = "DOWNLOADING";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
@@ -467,7 +468,7 @@ describe("DownloadQueue", () => {
         onBegin: jest.fn(),
       };
 
-      task.state = "DOWNLOADING" as DownloadTaskState.DOWNLOADING;
+      task.state = "DOWNLOADING";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
@@ -540,10 +541,10 @@ describe("DownloadQueue", () => {
       (checkForExistingDownloads as jest.Mock).mockReturnValue([
         Object.assign(task, {
           id: assignedId,
-        })
+        }),
       ]);
 
-      task.state = "PAUSED" as DownloadTaskState.PAUSED;
+      task.state = "PAUSED";
 
       // Pretend app got launched again by using another queue
       const relaunchQueue = new DownloadQueue();
@@ -1050,7 +1051,7 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._begin!({expectedBytes: 42, headers: {}});
+      task._begin!({ expectedBytes: 42, headers: {} });
       expect(handlers.onBegin).toHaveBeenCalledTimes(1);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -1071,7 +1072,7 @@ describe("DownloadQueue", () => {
     it("should start paused if requested on background downloading task", async () => {
       const queue = new DownloadQueue();
 
-      task.state = "DOWNLOADING" as DownloadTaskState.DOWNLOADING;
+      task.state = "DOWNLOADING";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
@@ -1094,7 +1095,7 @@ describe("DownloadQueue", () => {
     it("should start paused if requested on paused background task", async () => {
       const queue = new DownloadQueue();
 
-      task.state = "PAUSED" as DownloadTaskState.PAUSED;
+      task.state = "PAUSED";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
