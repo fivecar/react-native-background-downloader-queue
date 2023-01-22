@@ -16,7 +16,7 @@ import {
   ErrorHandler,
   ProgressHandler,
 } from "react-native-background-downloader";
-import RNFS, { exists, readdir, unlink } from "react-native-fs";
+import RNFS, { exists, readdir, stat, unlink } from "react-native-fs";
 import DownloadQueue, { DownloadQueueHandlers } from "../src";
 
 jest.mock("@react-native-async-storage/async-storage", () => {
@@ -170,6 +170,7 @@ describe("DownloadQueue", () => {
     (exists as jest.Mock).mockReturnValue(false);
     (readdir as jest.Mock).mockReturnValue([]);
     (unlink as jest.Mock).mockImplementation(() => Promise.resolve());
+    (stat as jest.Mock).mockReturnValue({ size: 8675309 });
 
     (download as jest.Mock).mockReturnValue(task);
     (checkForExistingDownloads as jest.Mock).mockReturnValue([]);
@@ -873,6 +874,47 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com");
       expect(download).toHaveBeenCalledTimes(2);
     });
+
+    it("should send notifications for revived lazy-deletions", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onDone: jest.fn(),
+      };
+
+      Object.assign(task, {
+        id: "foo",
+        begin: jest.fn(handler => {
+          task._begin = handler;
+          return task;
+        }),
+        done: jest.fn(handler => {
+          task._done = handler;
+          return task;
+        }),
+      });
+
+      (exists as jest.Mock).mockResolvedValue(true);
+
+      await queue.init({ domain: "mydomain", handlers });
+      await queue.addUrl("http://foo.com");
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._begin!("http://foo.com");
+      expect(handlers.onBegin).toHaveBeenCalledTimes(1);
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await task._done!();
+      expect(handlers.onDone).toHaveBeenCalledTimes(1);
+
+      await queue.removeUrl("http://foo.com", 0);
+      await queue.addUrl("http://foo.com");
+
+      // When we re-add a lazy-deleted download that was already downloaded,
+      // we expect to get notifications for begin/done again.
+      expect(handlers.onBegin).toHaveBeenCalledTimes(2);
+      expect(handlers.onDone).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("Pause / resume", () => {
@@ -1056,8 +1098,6 @@ describe("DownloadQueue", () => {
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(task.pause).toHaveBeenCalledTimes(1); // no change!
     });
-
-
 
     it("should unsubscribe when terminated", async () => {
       const queue = new DownloadQueue();
@@ -1426,27 +1466,23 @@ describe("DownloadQueue", () => {
         onError: jest.fn(),
       };
       const queue = new DownloadQueue();
-      let beginner: BeginHandler;
-      let progresser: ProgressHandler;
-      let doner: DoneHandler;
-      let errorer: ErrorHandler;
 
       Object.assign(task, {
         id: "foo",
         begin: jest.fn(handler => {
-          beginner = handler;
+          task._begin = handler;
           return task;
         }),
         progress: jest.fn(handler => {
-          progresser = handler;
+          task._progress = handler;
           return task;
         }),
         done: jest.fn(handler => {
-          doner = handler;
+          task._done = handler;
           return task;
         }),
         error: jest.fn(handler => {
-          errorer = handler;
+          task._error = handler;
           return task;
         }),
       });
@@ -1455,13 +1491,13 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      beginner!({ expectedBytes: 300, headers: {} });
+      task._begin!({ expectedBytes: 300, headers: {} });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      progresser!(0.5, 500, 1000);
+      task._progress!(0.5, 500, 1000);
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await doner!();
+      await task._done!();
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      errorer!("foo", 500);
+      task._error!("foo", 500);
 
       expect(handlers.onBegin).toHaveBeenCalledTimes(1);
       expect(handlers.onProgress).toHaveBeenCalledTimes(1);

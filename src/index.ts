@@ -310,6 +310,14 @@ export default class DownloadQueue {
         ]);
         if (!curSpec.finished || !fileExists) {
           this.start(curSpec);
+        } else {
+          // If we already have the file, and you're reviving it from deletion,
+          // send "begin" and "done" notifications so that most clients can
+          // treat it the same as a fresh download.
+          const fileSpec = await RNFS.stat(curSpec.path);
+
+          this.handlers?.onBegin?.(curSpec.url, fileSpec.size);
+          this.handlers?.onDone?.(curSpec.url, curSpec.path);
         }
       }
       return;
