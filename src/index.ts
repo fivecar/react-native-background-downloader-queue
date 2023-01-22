@@ -186,6 +186,12 @@ export default class DownloadQueue {
     this.domain = domain;
     this.handlers = handlers;
 
+    // This is safe to call even if it already exists. It'll also create all
+    // necessary parent directories.
+    await RNFS.mkdir(this.getDomainedBasePath(), {
+      NSURLIsExcludedFromBackupKey: true,
+    });
+
     const [specData, existingTasks, dirFilenames] = await Promise.all([
       this.kvfs.readMulti<Spec>(`${this.keyFromId("")}*`),
       checkForExistingDownloads(),
@@ -756,16 +762,20 @@ export default class DownloadQueue {
 
   private async getDirFilenames() {
     try {
-      return await RNFS.readdir(`${basePath()}/${this.domain}`);
+      return await RNFS.readdir(this.getDomainedBasePath());
     } catch {
       // expected error when the directory doesn't exist
     }
     return [];
   }
 
+  private getDomainedBasePath(): string {
+    return `${basePath()}/${this.domain}`;
+  }
+
   private pathFromId(id: string, extension: string) {
     return (
-      `${basePath()}/${this.domain}/${id}` +
+      `${this.getDomainedBasePath()}/${id}` +
       (extension.length > 0 ? `.${extension}` : "")
     );
   }
