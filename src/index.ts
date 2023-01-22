@@ -6,6 +6,7 @@ import {
   completeHandler,
   download,
   DownloadTask,
+  DownloadTaskState,
 } from "react-native-background-downloader";
 import RNFS from "react-native-fs";
 import uuid from "react-uuid";
@@ -212,19 +213,7 @@ export default class DownloadQueue {
     this.isPausedByUser = !startActive;
 
     // First revive tasks that were working in the background
-    existingTasks.forEach(task => {
-      const spec = this.specs.find(spec => spec.id === task.id);
-      if (spec) {
-        this.addTask(spec.url, task);
-        if (this.active) {
-          task.resume(); // Assuming checkForExistingDownloads() hasn't already
-        } else {
-          task.pause();
-        }
-      } else {
-        task.stop();
-      }
-    });
+    existingTasks.forEach(task => this.reviveTask(task));
 
     // Now start downloads for specs that haven't finished
     const specsToDownload = this.specs.filter(
@@ -701,6 +690,61 @@ export default class DownloadQueue {
         this.pauseAllInternal();
       } else {
         this.resumeAllInternal();
+      }
+    }
+  }
+
+  private reviveTask(task: DownloadTask) {
+    const spec = this.specs.find(spec => spec.id === task.id);
+    if (spec) {
+      let shouldAddTask = true;
+
+      switch (task.state) {
+        case DownloadTaskState.DOWNLOADING:
+          // Since we're already downloading, make sure the client at least
+          // gets a notification that it's started.
+          this.handlers?.onBegin?.(spec.url, task.totalBytes);
+          if (!this.active) {
+            task.pause();
+          }
+          break;
+        case DownloadTaskState.PAUSED:
+          this.handlers?.onBegin?.(spec.url, task.totalBytes);
+          if (this.active) {
+            task.resume(); // Assuming checkForExistingDownloads() hasn't already
+          }
+          break;
+        case DownloadTaskState.DONE:
+          this.handlers?.onBegin?.(spec.url, task.totalBytes);
+          this.handlers?.onDone?.(spec.url, spec.path);
+          shouldAddTask = false;
+          break;
+        case DownloadTaskState.STOPPED:
+          this.start(spec);
+          shouldAddTask = false;
+          break;
+        case DownloadTaskState.FAILED:
+        default:
+          this.handlers?.onError?.(
+            spec.url,
+            "unknown error while backgrounded"
+          );
+          this.erroredIds.add(task.id);
+          this.ensureErrorTimerOn();
+          shouldAddTask = false;
+          break;
+      }
+
+      if (shouldAddTask) {
+        this.addTask(spec.url, task);
+      }
+    } else {
+      if (
+        [DownloadTaskState.DOWNLOADING, DownloadTaskState.PAUSED].includes(
+          task.state
+        )
+      ) {
+        task.stop();
       }
     }
   }
