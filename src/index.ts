@@ -800,7 +800,8 @@ function extensionFromUri(uri: string) {
     const parts = filename.split(".");
 
     if (parts.length > 1) {
-      return parts.pop();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      return parts.pop()!;
     }
   }
   return "";
