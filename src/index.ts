@@ -230,7 +230,15 @@ export default class DownloadQueue {
       await Promise.all(
         orphanedFiles.map(filename => {
           try {
-            return RNFS.unlink(this.pathFromId(filename));
+            const parts = filename.split(".");
+
+            if (parts.length > 1) {
+              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+              const extension = parts.pop()!;
+
+              return RNFS.unlink(this.pathFromId(parts.join("."), extension));
+            }
+            return RNFS.unlink(this.pathFromId(filename, ""));
           } catch {
             // Ignore errors
           }
@@ -293,7 +301,9 @@ export default class DownloadQueue {
         curSpec.createTime = Date.now();
 
         const [fileExists] = await Promise.all([
-          RNFS.exists(this.pathFromId(curSpec.id)),
+          RNFS.exists(
+            this.pathFromId(curSpec.id, extensionFromUri(curSpec.url))
+          ),
           this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
         ]);
         if (!curSpec.finished || !fileExists) {
@@ -315,7 +325,7 @@ export default class DownloadQueue {
     const spec: Spec = {
       id,
       url,
-      path: this.pathFromId(id),
+      path: this.pathFromId(id, extensionFromUri(url)),
       createTime: Date.now(),
       finished: false,
     };
@@ -753,8 +763,11 @@ export default class DownloadQueue {
     return [];
   }
 
-  private pathFromId(id: string) {
-    return `${basePath()}/${this.domain}/${id}`;
+  private pathFromId(id: string, extension: string) {
+    return (
+      `${basePath()}/${this.domain}/${id}` +
+      (extension.length > 0 ? `.${extension}` : "")
+    );
   }
 
   private keyFromId(id: string) {
@@ -777,4 +790,18 @@ function roundToNextMinute(timestamp: number) {
 
 function basePath() {
   return `${RNFS.DocumentDirectoryPath}/DownloadQueue`;
+}
+
+function extensionFromUri(uri: string) {
+  const url = new URL(uri);
+  const filename = url.pathname.split("/").pop();
+
+  if (filename) {
+    const parts = filename.split(".");
+
+    if (parts.length > 1) {
+      return parts.pop();
+    }
+  }
+  return "";
 }
