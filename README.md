@@ -61,7 +61,7 @@ const localOrRemotePath = await downloader.getAvailableUrl("https://example.com/
 
 For full documentation, see the javaDoc style comments in the package which automatically come up in VS Code when you use this library.
 
-### <code lang="Typescript">async init(<br/>&nbsp;&nbsp;options?: DownloadQueueOptions,<br/>): Promise&lt;void&gt;</code>
+### `async init(options?: DownloadQueueOptions): Promise<void>`
 
 Gets everything started (e.g. reconstitutes state from storage and reconciles it with downloads that might have completed in the background, subscribes to events, etc). You must call this first.
 
@@ -73,37 +73,37 @@ You can pass any of the following options, or nothing at all:
 |domain|string|"main"|By default, AsyncStorage keys and RNFS filenames are with DownloadQueue/main". If you want to use something other than "main", pass it here. This is commonly used to manage different queues for different users (e.g. you can use userId as the domain).|
 |urlToPath|(url:string) => string|undefined (i.e. files will be saved without extensions)|Callback used to get a pathname from a URL. By default, files are saved without any particular extension. But if you need the server extension to be preserved (e.g. you pass the file to a media player that uses the extension to determine its data format), pass a function here that returns a path given a URL (e.g. for `https://foo.com/baz/moo.mp3?q=song`, returns  `baz/moo.mp3`). The easiest way to implement this if you already have a React Native URL polyfill is: `(url) => new URL(url).pathname`. If you don't have a polyfill, you can use something like  https://www.npmjs.com/package/react-native-url-polyfill|
 |startActive|boolean|true|Whether to start the queue in an active state where downloads will be started. If false, no downloads will begin until you call resumeAll().|
-|netInfoAddEventListener|<code lang="Typescript">(listener:<br/>&nbsp;&nbsp;(state: {<br/>&nbsp;&nbsp;&nbsp;isConnected: boolean \| null,<br/>&nbsp;&nbsp;&nbsp;type: string,<br/>&nbsp;&nbsp;}) => void<br/>) => () => void</code>|undefined|If you'd like DownloadQueue to pause downloads when the device is offline, pass this. Usually easiest to literally pass `NetInfo.addEventListener`.|
+|netInfoAddEventListener|(listener: (state: {isConnected: boolean \| null, type: string}) => void) => ()=> void|undefined|If you'd like DownloadQueue to pause downloads when the device is offline, pass this. Usually easiest to literally pass `NetInfo.addEventListener`.|
 |activeNetworkTypes| string[] | [] |The NetInfoStateType values for which downloads will be allowed. If you pass undefined or [], downloads will happen on all connection types. A common practice is to pass ["wifi", "ethernet"] if you want to help users avoid cellular data charges. As of @react-native-community/netinfo@9.3.7, valid values are "unknown", "none", "wifi", "cellular", "bluetooth", "ethernet", "wimax", "vpn", "other", "mixed".|
 
 Here are the optional notification handlers you can pass to be informed of download status changes:
 
 | Handler | Description |
 |---|---|
-|<code lang="Typescript">onBegin?: (<br/>&nbsp;&nbsp;url: string,<br/>&nbsp;&nbsp;totalBytes: number,<br/>) => void</code> | Called when the download has begun and the total number of bytes expected is known.|
-|<code lang="Typescript">onProgress?: (<br/>&nbsp;&nbsp;url: string,<br/>&nbsp;&nbsp;fractionWritten: number,<br/>&nbsp;&nbsp;bytesWritten: number,<br/>&nbsp;&nbsp;totalBytes: number,<br/>) => void</code> | Called at most every 1.5 seconds for any file while it's downloading. `fractionWritten` is between 0.0 and 1.0|
-|<code lang="Typescript">onDone?: (<br/>&nbsp;&nbsp;url: string,<br/>&nbsp;&nbsp;localPath: string<br/>) => void</code>| Called when the download has completed successfully. `localPath` will be a file path.|
-|<code lang="Typescript">onWillRemove?: (<br/>&nbsp;&nbsp;url: string,<br/>) => Promise&lt;void&gt;</code>| Called before any url is removed from the queue. This is async because `removeUrl` (and also `setQueue`, when it needs to remove some urls) will block until you return from this, giving you the opportunity remove any dependencies on any downloaded local file before it's deleted.|
-|<code lang="Typescript">onError?: (<br/>&nbsp;&nbsp;url: string,<br/>&nbsp;&nbsp;error: any<br/>) => void</code>| Called when there's been an issue downloading the file. Note that this is mostly for you to communicate something to the user, or to do other housekeeping; DownloadQueue will automatically re-attempt the download every minute (while you're online) until it succeeds.|
+|`onBegin?: (url: string, totalBytes: number) => void` | Called when the download has begun and the total number of bytes expected is known.|
+|`onProgress?: (url: string, fractionWritten: number, bytesWritten: number, totalBytes: number) => void` | Called at most every 1.5 seconds for any file while it's downloading. `fractionWritten` is between 0.0 and 1.0|
+|`onDone?: (url: string, localPath: string) => void`| Called when the download has completed successfully. `localPath` will be a file path.|
+|`onWillRemove?: (url: string) => Promise<void>`| Called before any url is removed from the queue. This is async because `removeUrl` (and also `setQueue`, when it needs to remove some urls) will block until you return from this, giving you the opportunity remove any dependencies on any downloaded local file before it's deleted.|
+|`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file. Note that this is mostly for you to communicate something to the user, or to do other housekeeping; DownloadQueue will automatically re-attempt the download every minute (while you're online) until it succeeds.|
 
-### <code lang="Typescript">terminate(): void</code>
+### `terminate(): void`
 
 Terminates all pending downloads and stops all activity, including
 processing lazy-deletes. You can re-init() if you'd like -- but in most cases where you plan to re-init, `pause()` might be what you really meant.
 
-### <code lang="Typescript">async addUrl(<br/>&nbsp;&nbsp;url: string,<br/>): Promise&lt;void&gt;</code>
+### `async addUrl(url: string): Promise<void>`
 
 Downloads a url to the local documents directory. Safe to call if it's already been added before. If it's been lazy-deleted, it'll be revived.
 
-### <code lang="Typescript">async removeUrl(<br/>&nbsp;&nbsp;url: string,<br/>&nbsp;&nbsp;deleteTime = -1,<br/>): Promise&lt;void&gt;</code>
+### `async removeUrl(url: string, deleteTime = -1): Promise<void>`
 
 Removes a url record and any associated file that's been downloaded. Can optionally be a lazy delete if you pass a `deleteTime` timestamp.
 
-### <code lang="Typescript">async setQueue(<br/>&nbsp;&nbsp;urls: string[],<br/>&nbsp;&nbsp;deleteTime = -1,<br/>): Promise&lt;void&gt;</code>
+### `async setQueue(urls: string[], deleteTime = -1): Promise<void>`
 
 Sets the sum total of urls to keep in the queue. If previously-added urls don't show up here, they'll be removed. New urls will be added.
 
-### <code lang="Typescript">async getStatus(<br/>&nbsp;&nbsp;url: string,<br/>): Promise&lt;DownloadQueueStatus | null&gt;</code>
+### `async getStatus(url: string): Promise<DownloadQueueStatus | null>`
 
 Returns a `DownloadQueueStatus` object reflecting the status of a url's download. If the url isn't in the queue (e.g. you've deleted it, or you've passed a random string), returns `null`.
 
@@ -113,19 +113,19 @@ Returns a `DownloadQueueStatus` object reflecting the status of a url's download
 | path  | string  | Path to local file |
 | complete | boolean | Whether the file is completely downloaded. Note that if this is `false`, `path` may point to a file that either doesn't exist, or that is only partially downloaded. |
 
-### <code lang="Typescript">async getQueueStatus(): Promise<DownloadQueueStatus[]></code>
+### `async getQueueStatus(): Promise<DownloadQueueStatus[]>`
 
 Returns the status of all urls in the queue, excluding urls marked for lazy deletion.
 
-### <code lang="Typescript">pauseAll(): void</code>
+### `pauseAll(): void`
 
 Pauses all active downloads. Note that if you just want to download on certain types of connections, you should instead use `activeNetworkTypes` in `init()`. For instance, to avoid cellular data charges, you might pass `activeNetworkTypes: ["wifi", "ethernet"]`.
 
-### <code lang="Typescript">resumeAll(): void</code>
+### `resumeAll(): void`
 
 Resumes all active downloads that were previously paused. If you `init()` with `startActive === false`, you'll want to call this at some point or else downloads will never happen. Also, downloads will only proceed if the network connection type passes the `activeNetworkTypes` filter (which by default allows all connection types).
 
-### <code lang="Typescript">async getAvailableUrl(<br/>&nbsp;&nbsp;url: string,<br/>): Promise&lt;string&gt;</code>
+### `async getAvailableUrl(url: string): Promise<string>`
 
 Gets a remote or local url, preferring the local path when possible. If the local file hasn't yet been downloaded fully, returns the remote url.
 
