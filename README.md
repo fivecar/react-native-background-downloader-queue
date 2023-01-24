@@ -20,7 +20,7 @@ Automatically download files from urls, even in the background, and keep them lo
 ## Install
 
 First install peer dependencies:
-* [react-native-background-downloader](https://github.com/kesha-antonov/react-native-background-downloader#readme)
+* [react-native-background-downloader](https://github.com/kesha-antonov/react-native-background-downloader#readme). Be sure to follow the sneakily-hidden [extra iOS step for AppDelegate.m](https://github.com/kesha-antonov/react-native-background-downloader#ios---extra-mandatory-step) or else your background tasks will be canceled by the OS.
 * [react-native-fs](https://github.com/itinance/react-native-fs#readme)
 * [@react-native-async-storage/async-storage](https://github.com/react-native-async-storage/async-storage#readme)
 
@@ -127,7 +127,7 @@ Resumes all active downloads that were previously paused. If you `init()` with `
 
 ### `async getAvailableUrl(url: string): Promise<string>`
 
-Gets a remote or local url, preferring to the local path when possible. If the local file hasn't yet been downloaded, returns the remote url.
+Gets a remote or local url, preferring the local path when possible. If the local file hasn't yet been downloaded fully, returns the remote url.
 
 
 [build-img]:https://github.com/fivecar/react-native-background-downloader-queue/actions/workflows/release.yml/badge.svg
