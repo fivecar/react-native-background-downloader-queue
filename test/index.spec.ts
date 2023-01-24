@@ -170,6 +170,10 @@ jest.mock("@react-native-community/netinfo", () => ({
   }),
 }));
 
+function urlToPath(url: string): string {
+  return new URL(url).pathname;
+}
+
 describe("DownloadQueue", () => {
   beforeEach(() => {
     // restore a few commonly-used functions between tests to avoid unexpected
@@ -526,7 +530,7 @@ describe("DownloadQueue", () => {
         })
       );
 
-      await queue.init({ domain: "mydomain" });
+      await queue.init({ domain: "mydomain", urlToPath });
       await queue.addUrl("http://foo.com/a.mp3");
       expect(download).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -550,6 +554,58 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/a",
+          destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
+        })
+      );
+
+      queue.terminate();
+      await queue.init({ domain: "mydomain", urlToPath });
+      (download as jest.Mock).mockClear(); // Clear out revival of prev url
+      await queue.addUrl("http://foo.com/a.mp3");
+      expect(download).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://foo.com/a.mp3",
+          destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}.mp3`,
+        })
+      );
+      (download as jest.Mock).mockClear();
+      // This tests whether paths/extensions are dealt with properly when a url
+      // ends in a slash.
+      await queue.addUrl("http://foo.com/abc/");
+      expect(download).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://foo.com/abc/",
+          destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
+        })
+      );
+      (download as jest.Mock).mockClear();
+      // Tests whether paths/extensions with terminating periods are handled
+      await queue.addUrl("http://foo.com/a/bc.");
+      expect(download).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://foo.com/a/bc.",
+          destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
+        })
+      );
+      (download as jest.Mock).mockClear();
+      // Tests whether paths with no extensions are handled when urlToPath is
+      // given by caller
+      await queue.addUrl("http://foo.com/a/bc");
+      expect(download).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://foo.com/a/bc",
+          destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
+        })
+      );
+
+      // Now make sure termination clears out the urlPath callback
+      queue.terminate();
+      await queue.init({ domain: "mydomain" });
+      (download as jest.Mock).mockClear(); // Clear out revival of prev url
+      await queue.addUrl("http://foo.com/b.mp3");
+      expect(download).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "http://foo.com/b.mp3",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
         })
       );
@@ -1780,7 +1836,7 @@ describe("DownloadQueue", () => {
           });
         }
       );
-      await queue.init({ domain: "mydomain", handlers });
+      await queue.init({ domain: "mydomain", handlers, urlToPath });
       await queue.addUrl("http://foo.com/a.mp3");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion

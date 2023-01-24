@@ -120,6 +120,24 @@ export interface DownloadQueueOptions {
    * started. If false, no downloads will begin until you call resumeAll().
    */
   startActive?: boolean;
+  /**
+   * Callback used to get a pathname from a URL. By default, files are saved
+   * without any particular extension. But if you need the server extension to
+   * be preserved (e.g. you pass the file to a media player that uses the
+   * extension to determine its data format), pass a function here that returns
+   * a path given a URL (e.g. for `https://foo.com/baz/moo.mp3?q=song`, returns
+   * `baz/moo.mp3`). The easiest way to implement this, if you already have
+   * a React Native polyfill for URL, is:
+   *
+   * function urlToPath(url) {
+   *  const parsed = new URL(url);
+   *  return parsed.pathname;
+   * }
+   *
+   * If you don't have a polyfill, you can use something like
+   * https://www.npmjs.com/package/react-native-url-polyfill
+   */
+  urlToPath?: (url: string) => string;
 }
 
 /**
@@ -139,6 +157,7 @@ export default class DownloadQueue {
   );
   private handlers?: DownloadQueueHandlers = undefined;
   private active = true;
+  private urlToPath?: (url: string) => string = undefined;
   private erroredIds = new Set<string>();
   private errorTimer: NodeJS.Timeout | null = null;
   private netInfoUnsubscriber?: () => void;
@@ -178,6 +197,7 @@ export default class DownloadQueue {
     netInfoAddEventListener = undefined,
     activeNetworkTypes = [],
     startActive = true,
+    urlToPath = undefined,
   }: DownloadQueueOptions = {}): Promise<void> {
     if (this.inited) {
       throw new Error("DownloadQueue already initialized");
@@ -185,6 +205,7 @@ export default class DownloadQueue {
 
     this.domain = domain;
     this.handlers = handlers;
+    this.urlToPath = urlToPath;
 
     // This is safe to call even if it already exists. It'll also create all
     // necessary parent directories.
@@ -279,6 +300,7 @@ export default class DownloadQueue {
     this.tasks = [];
     this.specs = [];
     this.handlers = undefined;
+    this.urlToPath = undefined;
     this.inited = false;
     this.erroredIds.clear();
     if (this.errorTimer) {
@@ -308,7 +330,7 @@ export default class DownloadQueue {
 
         const [fileExists] = await Promise.all([
           RNFS.exists(
-            this.pathFromId(curSpec.id, extensionFromUri(curSpec.url))
+            this.pathFromId(curSpec.id, this.extensionFromUri(curSpec.url))
           ),
           this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
         ]);
@@ -331,7 +353,7 @@ export default class DownloadQueue {
     const spec: Spec = {
       id,
       url,
-      path: this.pathFromId(id, extensionFromUri(url)),
+      path: this.pathFromId(id, this.extensionFromUri(url)),
       createTime: Date.now(),
       finished: false,
     };
@@ -760,6 +782,24 @@ export default class DownloadQueue {
     }
   }
 
+  private extensionFromUri(uri: string) {
+    const path = this.urlToPath?.(uri);
+
+    if (path) {
+      const filename = path.split("/").pop();
+
+      if (filename) {
+        const parts = filename.split(".");
+
+        if (parts.length > 1) {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          return parts.pop()!;
+        }
+      }
+    }
+    return "";
+  }
+
   private async getDirFilenames() {
     try {
       return await RNFS.readdir(this.getDomainedBasePath());
@@ -802,17 +842,3 @@ function basePath() {
   return `${RNFS.DocumentDirectoryPath}/DownloadQueue`;
 }
 
-function extensionFromUri(uri: string) {
-  const url = new URL(uri);
-  const filename = url.pathname.split("/").pop();
-
-  if (filename) {
-    const parts = filename.split(".");
-
-    if (parts.length > 1) {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      return parts.pop()!;
-    }
-  }
-  return "";
-}
