@@ -239,7 +239,7 @@ export default class DownloadQueue {
     this.isPausedByUser = !startActive;
 
     // First revive tasks that were working in the background
-    existingTasks.forEach(task => this.reviveTask(task));
+    await Promise.all(existingTasks.map(task => this.reviveTask(task)));
 
     // Now start downloads for specs that haven't finished
     const specsToDownload = this.specs.filter(
@@ -731,9 +731,12 @@ export default class DownloadQueue {
     }
   }
 
-  private reviveTask(task: DownloadTask) {
+  private async reviveTask(task: DownloadTask) {
     const spec = this.specs.find(spec => spec.id === task.id);
-    if (spec) {
+
+    // Don't revive finished tasks or ones that already have lazy deletes in
+    // progress.
+    if (spec && !spec.finished && spec.createTime > 0) {
       let shouldAddTask = true;
 
       switch (task.state) {
@@ -778,6 +781,18 @@ export default class DownloadQueue {
     } else {
       if (["DOWNLOADING", "PAUSED"].includes(task.state)) {
         task.stop();
+
+        if (spec && !spec.finished) {
+          try {
+            // There might be a partially downloaded file on disk. We need to
+            // get rid of it in case a lazy-delete spec is revived, at which
+            // point an existing file on disk will be taken to be a
+            // successfully downloaded one.
+            await RNFS.unlink(spec.path);
+          } catch {
+            // Expected for missing files
+          }
+        }
       }
     }
   }
