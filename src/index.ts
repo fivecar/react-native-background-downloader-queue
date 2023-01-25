@@ -31,7 +31,7 @@ interface Spec {
 const ERROR_RETRY_DELAY_MS = 60 * 1000;
 
 /**
- * Derived directly from NetInfoState, but we don't wan to force you to use
+ * Derived directly from NetInfoState, but we don't want to force you to use
  * that package if you don't want. So we take just the subset of fields we
  * actually use.
  */
@@ -107,11 +107,18 @@ export interface DownloadQueueOptions {
    */
   netInfoAddEventListener?: DownloadQueueAddEventListener;
   /**
-   * The NetInfoStateType values for which downloads will be allowed. If you
-   * pass undefined or [], downloads will happen on all connection types. A
-   * common practice is to pass ["wifi", "ethernet"] if you want to help users
-   * avoid cell data charges. As of @react-native-community/netinfo@9.3.7,
-   * valid values are "unknown" | "none" | "wifi" | "cellular" | "bluetooth" |
+   * Callback that gets the current network state. If you pass
+   * `netInfoAddEventListener`, you must pass this as well. The easiest thing
+   * is usually to pass `NetInfo.fetch`.
+   */
+  netInfoFetchState?: () => Promise<DownloadQueueNetInfoState>;
+  /**
+   * The NetInfoStateType values for which downloads will be allowed. Only works
+   * if you also pass `netInfoAddEventListener`. If `activeNetworkTypes` is
+   * undefined or [], downloads will happen on all connection types. A common
+   * practice is to pass ["wifi", "ethernet"] if you want to help users avoid
+   * cell data charges. As of @react-native-community/netinfo@9.3.7, valid
+   * values are "unknown" | "none" | "wifi" | "cellular" | "bluetooth" |
    * "ethernet" | "wimax" | "vpn" | "other" | "mixed".
    */
   activeNetworkTypes?: string[];
@@ -161,6 +168,7 @@ export default class DownloadQueue {
   private erroredIds = new Set<string>();
   private errorTimer: NodeJS.Timeout | null = null;
   private netInfoUnsubscriber?: () => void;
+  private netInfoFetchState?: () => Promise<DownloadQueueNetInfoState>;
   private activeNetworkTypes: string[] = [];
   private wouldAutoPause = false; // Whether we'd pause if the user didn't
   private isPausedByUser = false; // Whether the client called pauseAll()
@@ -183,18 +191,23 @@ export default class DownloadQueue {
    * @param options.netInfoAddEventListener (optional) If you'd like
    * DownloadQueue to pause downloads when the device is offline, pass this.
    * Usually easiest to literally pass `NetInfo.addEventListener`.
+   * @param options.netInfoFetchState (optional )Callback that gets the current
+   * network state. If you pass `netInfoAddEventListener`, you must pass this as
+   * well. The easiest thing is usually to pass `NetInfo.fetch`.
    * @param options.activeNetworkTypes (optional) The NetInfoStateType values
-   * for which downloads will be allowed. If you pass undefined or [], downloads
-   * will happen on all connection types. A common practice is to pass ["wifi",
-   * "ethernet"] if you want to help users avoid cell data charges. As of
-   * @react-native-community/netinfo@9.3.7, valid values are "unknown" | "none"
-   * | "wifi" | "cellular" | "bluetooth" | "ethernet" | "wimax" | "vpn" |
+   * for which downloads will be allowed. Only works if you also pass
+   * `netInfoAddEventListener`. If `activeNetworkTypes` is undefined or [],
+   * downloads will happen on all connection types. A common practice is to pass
+   * ["wifi", "ethernet"] if you want to help users avoid cell data charges. As
+   * of @react-native-community/netinfo@9.3.7, valid values are "unknown" |
+   * "none" | "wifi" | "cellular" | "bluetooth" | "ethernet" | "wimax" | "vpn" |
    * "other" | "mixed".
    */
   async init({
     domain = "main",
     handlers = undefined,
     netInfoAddEventListener = undefined,
+    netInfoFetchState = undefined,
     activeNetworkTypes = [],
     startActive = true,
     urlToPath = undefined,
@@ -279,12 +292,33 @@ export default class DownloadQueue {
     );
 
     this.wouldAutoPause = false;
+
+    if (
+      activeNetworkTypes.length > 0 &&
+      (!netInfoAddEventListener || !netInfoFetchState)
+    ) {
+      throw new Error(
+        "If you pass `activeNetworkTypes`, you must also pass both `netInfoAddEventListener` and `netInfoFetchState`"
+      );
+    }
+    if (netInfoAddEventListener && !netInfoFetchState) {
+      throw new Error(
+        "If you pass `netInfoAddEventListener`, you must also pass `netInfoFetchState`"
+      );
+    }
     this.activeNetworkTypes = activeNetworkTypes;
-    this.netInfoUnsubscriber = netInfoAddEventListener?.(
-      (state: DownloadQueueNetInfoState) => {
-        this.onNetInfoChanged(state);
-      }
-    );
+    this.netInfoFetchState = netInfoFetchState;
+    if (netInfoAddEventListener) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const state = await this.netInfoFetchState!();
+
+      this.onNetInfoChanged(state);
+      this.netInfoUnsubscriber = netInfoAddEventListener(
+        (state: DownloadQueueNetInfoState) => {
+          this.onNetInfoChanged(state);
+        }
+      );
+    }
 
     this.inited = true;
   }
@@ -606,6 +640,26 @@ export default class DownloadQueue {
     this.addTask(spec.url, task);
     if (!this.active) {
       task.pause();
+    }
+  }
+
+  /**
+   * Sets the types of networks which you want downloads to occur on.
+   * @param types The network types to allow downloads on. These should come
+   * from `NetInfo.NetInfoStateType`, e.g. `["wifi", "cellular"]`. If you pass
+   * an empty array, downloads will happen under all network connection types.
+   */
+  async setActiveNetworkTypes(types: string[]): Promise<void> {
+    this.verifyInitialized();
+
+    this.activeNetworkTypes = types;
+    if (this.netInfoFetchState) {
+      const state = await this.netInfoFetchState();
+      this.onNetInfoChanged(state);
+    } else {
+      throw new Error(
+        "Can't `setActiveNetworkType` without having init'd with `netInfoFetchState`"
+      );
     }
   }
 

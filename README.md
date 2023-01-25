@@ -74,7 +74,8 @@ You can pass any of the following options, or nothing at all:
 |urlToPath|(url:string) => string|undefined (i.e. files will be saved without extensions)|Callback used to get a pathname from a URL. By default, files are saved without any particular extension. But if you need the server extension to be preserved (e.g. you pass the file to a media player that uses the extension to determine its data format), pass a function here that returns a path given a URL (e.g. for `https://foo.com/baz/moo.mp3?q=song`, returns  `baz/moo.mp3`). The easiest way to implement this if you already have a React Native URL polyfill is: `(url) => new URL(url).pathname`. If you don't have a polyfill, you can use something like  https://www.npmjs.com/package/react-native-url-polyfill|
 |startActive|boolean|true|Whether to start the queue in an active state where downloads will be started. If false, no downloads will begin until you call resumeAll().|
 |netInfoAddEventListener|(listener: (state: {isConnected: boolean \| null, type: string}) => void) => ()=> void|undefined|If you'd like DownloadQueue to pause downloads when the device is offline, pass this. Usually easiest to literally pass `NetInfo.addEventListener`.|
-|activeNetworkTypes| string[] | [] |The NetInfoStateType values for which downloads will be allowed. If you pass undefined or [], downloads will happen on all connection types. A common practice is to pass ["wifi", "ethernet"] if you want to help users avoid cellular data charges. As of @react-native-community/netinfo@9.3.7, valid values are "unknown", "none", "wifi", "cellular", "bluetooth", "ethernet", "wimax", "vpn", "other", "mixed".|
+|netInfoFetchState|() => Promise&lt;DownloadQueueNetInfoState&gt;|undefined|Callback that gets the current network state. If you pass `netInfoAddEventListener`, you must pass this as well. The easiest thing is usually to pass `NetInfo.fetch`.|
+|activeNetworkTypes| string[] | [] |The NetInfoStateType values for which downloads will be allowed. Only works if you also pass `netInfoAddEventListener`.If `activeNetworkTypes` is undefined or [], downloads will happen on all connection types. A common practice is to pass ["wifi", "ethernet"] if you want to help users avoid cellular data charges. As of @react-native-community/netinfo@9.3.7, valid values are "unknown", "none", "wifi", "cellular", "bluetooth", "ethernet", "wimax", "vpn", "other", "mixed".|
 
 Here are the optional notification handlers you can pass to be informed of download status changes:
 
@@ -129,6 +130,9 @@ Resumes all active downloads that were previously paused. If you `init()` with `
 
 Gets a remote or local url, preferring the local path when possible. If the local file hasn't yet been downloaded fully, returns the remote url.
 
+### `async setActiveNetworkTypes(types: string[]): Promise<void>`
+
+Sets the types of networks which you want downloads to occur on. This can be changed from what you originally passed `init()`. If you call this, you must have passed both `netInfoAddEventListener` as well as `netInfoFetchState` during `init()`. Values in `types` should come from `NetInfo.NetInfoStateType`, e.g. `["wifi", "cellular"]`. If you pass an empty array, downloads will happen under all network connection types.
 
 [build-img]:https://github.com/fivecar/react-native-background-downloader-queue/actions/workflows/release.yml/badge.svg
 [build-url]:https://github.com/fivecar/react-native-background-downloader-queue/actions/workflows/release.yml
