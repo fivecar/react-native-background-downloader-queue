@@ -1558,6 +1558,26 @@ describe("DownloadQueue", () => {
       await expect(queue.setActiveNetworkTypes(["wifi"])).rejects.toThrow();
     });
 
+
+    it("should do nothing when setting same active network types", async () => {
+      const queue = new DownloadQueue();
+
+      await queue.init({
+        domain: "mydomain",
+        activeNetworkTypes: ["wifi", "ethernet"],
+        netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
+      });
+      expect(addEventListener).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      await queue.setActiveNetworkTypes(["ethernet", "wifi"]);
+      expect(fetch).toHaveBeenCalledTimes(1); // no change
+
+      await queue.setActiveNetworkTypes(["ethernet", "wifi", "cellular"]);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
     it("should update activeNetworkTypes to current conditions", async () => {
       const queue = new DownloadQueue();
       const state = createNetState(true);
