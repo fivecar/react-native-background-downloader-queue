@@ -1,8 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   addEventListener,
+  fetch,
   NetInfoState,
-  NetInfoStateType
+  NetInfoStateType,
 } from "@react-native-community/netinfo";
 import { mock } from "jest-mock-extended";
 import KVFS from "key-value-file-system";
@@ -159,6 +160,7 @@ async function expectPublicsToFail(queue: DownloadQueue) {
   expect(() => queue.resumeAll()).toThrow();
   await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
   await expect(queue.getStatus("whatevs")).rejects.toThrow();
+  await expect(queue.setActiveNetworkTypes(["boo"])).rejects.toThrow();
 }
 
 let netInfoHandler: (state: NetInfoState) => void;
@@ -168,6 +170,7 @@ jest.mock("@react-native-community/netinfo", () => ({
     netInfoHandler = handler;
     return jest.fn();
   }),
+  fetch: jest.fn(() => Promise.resolve({ isConnected: true, type: "wifi" })),
 }));
 
 function urlToPath(url: string): string {
@@ -475,6 +478,25 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledWith(
         expect.objectContaining({ id: "foo" })
       );
+    });
+
+    it("enforces netInfo callbacks when activeNetworkTypes is passed", async () => {
+      const queue = new DownloadQueue();
+
+      await expect(
+        queue.init({ domain: "mydomain", activeNetworkTypes: ["wifi"] })
+      ).rejects.toThrow();
+    });
+
+    it("enforces netInfoFetchState when netInfoAddEventListener is passed", async () => {
+      const queue = new DownloadQueue();
+
+      await expect(
+        queue.init({
+          domain: "mydomain",
+          netInfoAddEventListener: addEventListener,
+        })
+      ).rejects.toThrow();
     });
   });
 
@@ -841,7 +863,7 @@ describe("DownloadQueue", () => {
   });
 
   describe("Getting queue status", () => {
-    it("it should return status on a single file", async () => {
+    it("should return status on a single file", async () => {
       const queue = new DownloadQueue();
 
       (download as jest.Mock).mockImplementation(
@@ -879,7 +901,7 @@ describe("DownloadQueue", () => {
       );
     });
 
-    it("it should return the same status as a single or a group", async () => {
+    it("should return the same status as a single or a group", async () => {
       const queue = new DownloadQueue();
 
       await queue.init({ domain: "mydomain" });
@@ -904,7 +926,7 @@ describe("DownloadQueue", () => {
       );
     });
 
-    it("it should not return status on a single lazy-deleted file", async () => {
+    it("should not return status on a single lazy-deleted file", async () => {
       const queue = new DownloadQueue();
 
       await queue.init({ domain: "mydomain" });
@@ -915,7 +937,7 @@ describe("DownloadQueue", () => {
       expect(res).toEqual(null);
     });
 
-    it("it should return yet-to-be downloaded files", async () => {
+    it("should return yet-to-be downloaded files", async () => {
       const queue = new DownloadQueue();
 
       await queue.init({ domain: "mydomain" });
@@ -944,7 +966,7 @@ describe("DownloadQueue", () => {
       expect(res.length).toEqual(3);
     });
 
-    it("it should return downloaded files", async () => {
+    it("should return downloaded files", async () => {
       const queue = new DownloadQueue();
       const idMap: { [url: string]: TaskWithHandlers } = {};
 
@@ -1000,7 +1022,7 @@ describe("DownloadQueue", () => {
       expect(res.length).toEqual(3);
     });
 
-    it("it should not return lazy-deleted files", async () => {
+    it("should not return lazy-deleted files", async () => {
       const queue = new DownloadQueue();
       const idMap: { [url: string]: TaskWithHandlers } = {};
 
@@ -1325,6 +1347,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
       expect(task.resume).not.toHaveBeenCalled();
@@ -1345,6 +1368,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
         activeNetworkTypes: undefined,
       });
       await queue.addUrl("http://foo.com/a.mp3");
@@ -1361,6 +1385,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
 
@@ -1385,6 +1410,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
 
@@ -1409,6 +1435,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
         startActive: false,
       });
       await queue.addUrl("http://foo.com/a.mp3");
@@ -1435,6 +1462,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: customAdder,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
 
@@ -1451,6 +1479,7 @@ describe("DownloadQueue", () => {
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
 
@@ -1469,6 +1498,7 @@ describe("DownloadQueue", () => {
         domain: "mydomain",
         activeNetworkTypes: ["wifi", "ethernet"],
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
       expect(task.pause).not.toHaveBeenCalled();
@@ -1498,6 +1528,7 @@ describe("DownloadQueue", () => {
         domain: "mydomain",
         activeNetworkTypes: ["wifi", "ethernet"],
         netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
       });
       await queue.addUrl("http://foo.com/a.mp3");
 
@@ -1517,6 +1548,43 @@ describe("DownloadQueue", () => {
       state.type = "ethernet" as NetInfoStateType.ethernet;
       netInfoHandler(state);
       expect(task.pause).toHaveBeenCalledTimes(2);
+      expect(task.resume).toHaveBeenCalledTimes(1);
+    });
+
+    it("should refuse to set active network types without netInfoFetchState", async () => {
+      const queue = new DownloadQueue();
+
+      await queue.init({ domain: "mydomain" });
+      await expect(queue.setActiveNetworkTypes(["wifi"])).rejects.toThrow();
+    });
+
+    it("should update activeNetworkTypes to current conditions", async () => {
+      const queue = new DownloadQueue();
+      const state = createNetState(true);
+
+      await queue.init({
+        domain: "mydomain",
+        activeNetworkTypes: ["wifi", "ethernet"],
+        netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
+      });
+
+      await queue.addUrl("http://foo.com/a.mp3");
+      expect(task.pause).not.toHaveBeenCalled();
+
+      state.type = "cellular" as NetInfoStateType.cellular;
+      netInfoHandler(state);
+      expect(task.pause).toHaveBeenCalledTimes(1);
+
+      // It should resume now that active network types have changed
+      (fetch as jest.Mock).mockResolvedValueOnce(state);
+      await queue.setActiveNetworkTypes(["bebop", "cellular"]);
+      expect(task.pause).toHaveBeenCalledTimes(1);
+      expect(task.resume).toHaveBeenCalledTimes(1);
+
+      // It should have no effect now that we're back to wifi
+      await queue.setActiveNetworkTypes(["ethernet", "wifi"]);
+      expect(task.pause).toHaveBeenCalledTimes(1);
       expect(task.resume).toHaveBeenCalledTimes(1);
     });
   });
