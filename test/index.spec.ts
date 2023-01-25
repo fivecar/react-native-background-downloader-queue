@@ -439,6 +439,25 @@ describe("DownloadQueue", () => {
       expect(task.stop).toHaveBeenCalledTimes(2);
     });
 
+    it("stops lazy-deleted tasks from previous launches", async () => {
+      const queue = new DownloadQueue();
+
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      await kvfs.write("/mydomain/foo", {
+        id: task.id,
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: -(Date.now() + 300000), // simulate lazy-delete
+      });
+
+      task.state = "DOWNLOADING";
+      await queue.init({ domain: "mydomain" });
+
+      expect(task.stop).toHaveBeenCalledTimes(1);
+      // Should also delete partially-downloaded file
+      expect(unlink).toHaveBeenCalledTimes(1);
+    });
+
     it("starts downloads for specs without tasks or files", async () => {
       const queue = new DownloadQueue();
 
@@ -1652,7 +1671,7 @@ describe("DownloadQueue", () => {
     it("should handle a case where spec is finished but file is missing", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation(_ =>
+      (download as jest.Mock).mockImplementation(() =>
         Object.assign(task, {
           done: jest.fn((handler: DoneHandler) => {
             task._done = handler;
@@ -1676,7 +1695,7 @@ describe("DownloadQueue", () => {
       Platform.OS = "android";
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation(_ =>
+      (download as jest.Mock).mockImplementation(() =>
         Object.assign(task, {
           done: jest.fn((handler: DoneHandler) => {
             task._done = handler;
