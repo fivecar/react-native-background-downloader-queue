@@ -652,6 +652,13 @@ export default class DownloadQueue {
   async setActiveNetworkTypes(types: string[]): Promise<void> {
     this.verifyInitialized();
 
+    if (
+      this.activeNetworkTypes.length === types.length &&
+      this.activeNetworkTypes.every(type => types.includes(type))
+    ) {
+      return;
+    }
+
     this.activeNetworkTypes = types;
     if (this.netInfoFetchState) {
       const state = await this.netInfoFetchState();
