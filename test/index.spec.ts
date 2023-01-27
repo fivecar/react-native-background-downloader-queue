@@ -266,7 +266,7 @@ describe("DownloadQueue", () => {
       expect(unlink).toHaveBeenCalledTimes(2);
     });
 
-    it("doesn't delete files that have specs on init", async () => {
+    it("doesn't delete files without extensions that have specs on init", async () => {
       const queue = new DownloadQueue();
 
       (readdir as jest.Mock).mockImplementation(() => ["foo", "bar"]);
@@ -281,6 +281,26 @@ describe("DownloadQueue", () => {
       expect(unlink).toHaveBeenCalledWith(
         expect.stringMatching(
           `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/bar`
+        )
+      );
+      expect(unlink).toHaveBeenCalledTimes(1);
+    });
+
+    it("doesn't delete files with extensions that have specs on init", async () => {
+      const queue = new DownloadQueue();
+
+      (readdir as jest.Mock).mockImplementation(() => ["foo.mp3", "bar.mp3"]);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo.mp3`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init({ domain: "mydomain" });
+      expect(unlink).toHaveBeenCalledWith(
+        expect.stringMatching(
+          `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/bar.mp3`
         )
       );
       expect(unlink).toHaveBeenCalledTimes(1);

@@ -263,22 +263,15 @@ export default class DownloadQueue {
     }
 
     // Delete any files that don't have a spec
-    const orphanedFiles = dirFilenames.filter(
-      filename => !this.specs.some(spec => spec.id === filename)
+    const orphanedFiles = dirFilenames.map(splitFilenameFromExtension).filter(
+      // Remember that spec.id doesn't have an extension! So use basename.
+      ([basename]) => !this.specs.some(spec => spec.id === basename)
     );
     if (orphanedFiles.length) {
       await Promise.all(
-        orphanedFiles.map(filename => {
+        orphanedFiles.map(([basename, ext]) => {
           try {
-            const parts = filename.split(".");
-
-            if (parts.length > 1) {
-              // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-              const extension = parts.pop()!;
-
-              return RNFS.unlink(this.pathFromId(parts.join("."), extension));
-            }
-            return RNFS.unlink(this.pathFromId(filename, ""));
+            return RNFS.unlink(this.pathFromId(basename, ext));
           } catch {
             // Ignore errors
           }
@@ -908,6 +901,18 @@ export default class DownloadQueue {
       throw new Error("DownloadQueue not initialized");
     }
   }
+}
+
+function splitFilenameFromExtension(filename: string): [string, string] {
+  const parts = filename.split(".");
+
+  if (parts.length > 1) {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const extension = parts.pop()!;
+
+    return [parts.join("."), extension];
+  }
+  return [filename, ""];
 }
 
 function roundToNextMinute(timestamp: number) {
