@@ -356,9 +356,7 @@ export default class DownloadQueue {
         curSpec.createTime = Date.now();
 
         const [fileExists] = await Promise.all([
-          RNFS.exists(
-            this.pathFromId(curSpec.id, this.extensionFromUri(curSpec.url))
-          ),
+          RNFS.exists(curSpec.path),
           this.kvfs.write(this.keyFromId(curSpec.id), curSpec),
         ]);
         if (!curSpec.finished || !fileExists) {
