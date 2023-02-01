@@ -1,12 +1,13 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import KeyValueFileSystem from "key-value-file-system";
-import { Platform } from "react-native";
 import {
   checkForExistingDownloads,
   completeHandler,
   download,
   DownloadTask,
-} from "react-native-background-downloader";
+  ensureDownloadsAreRunning,
+} from "@kesha-antonov/react-native-background-downloader";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import KeyValueFileSystem from "key-value-file-system";
+import { Platform } from "react-native";
 import RNFS from "react-native-fs";
 import uuid from "react-uuid";
 
@@ -252,7 +253,17 @@ export default class DownloadQueue {
     this.isPausedByUser = !startActive;
 
     // First revive tasks that were working in the background
-    await Promise.all(existingTasks.map(task => this.reviveTask(task)));
+    if (existingTasks.length > 0) {
+      await Promise.all(existingTasks.map(task => this.reviveTask(task)));
+      await ensureDownloadsAreRunning();
+      if (!this.active) {
+        // ensureDownloadsAreRunning forces all un-stopped downloads to start.
+        // So we'll need to stop them again if !active.
+        existingTasks
+          .filter(task => task.state === "DOWNLOADING")
+          .forEach(task => void task.pause());
+      }
+    }
 
     // Now start downloads for specs that haven't finished
     const specsToDownload = this.specs.filter(
@@ -796,15 +807,9 @@ export default class DownloadQueue {
           // Since we're already downloading, make sure the client at least
           // gets a notification that it's started.
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
-          if (!this.active) {
-            task.pause();
-          }
           break;
         case "PAUSED":
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
-          if (this.active) {
-            task.resume(); // Assuming checkForExistingDownloads() hasn't already
-          }
           break;
         case "DONE":
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
@@ -828,7 +833,14 @@ export default class DownloadQueue {
       }
 
       if (shouldAddTask) {
+        // Downloader docs say to pause tasks before reattaching our handlers
+        task.pause();
         this.addTask(spec.url, task);
+      } else {
+        // According to downloader docs, we must either stop or pause revived
+        // tasks because ensureTasksRunning() will unpause any download we
+        // didn't explicitly stop (!)
+        task.stop();
       }
     } else {
       if (["DOWNLOADING", "PAUSED"].includes(task.state)) {
@@ -920,4 +932,3 @@ function roundToNextMinute(timestamp: number) {
 function basePath() {
   return `${RNFS.DocumentDirectoryPath}/DownloadQueue`;
 }
-
