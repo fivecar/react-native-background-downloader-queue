@@ -266,12 +266,27 @@ export default class DownloadQueue {
     }
 
     // Now start downloads for specs that haven't finished
-    const specsToDownload = this.specs.filter(
-      spec => !existingTasks.some(task => task.id === spec.id) && !spec.finished
+    await Promise.all(
+      this.specs.map(async spec => {
+        if (existingTasks.some(task => task.id === spec.id)) {
+          return;
+        }
+        if (spec.finished) {
+          // Once in a while we think the spec is finished but the file isn't
+          // on disk. This can happen when XCode installs a new build, and
+          // sometimes through TestFlight.
+          const exists = await RNFS.exists(spec.path);
+
+          if (exists) {
+            return;
+          }
+
+          spec.finished = false; // We're not really finished, it seems.
+          await this.kvfs.write(this.keyFromId(spec.id), spec);
+        }
+        return this.start(spec);
+      })
     );
-    if (specsToDownload.length) {
-      specsToDownload.forEach(spec => this.start(spec));
-    }
 
     // Delete any files that don't have a spec
     const orphanedFiles = dirFilenames.map(splitFilenameFromExtension).filter(
