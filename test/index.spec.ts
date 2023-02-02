@@ -494,7 +494,7 @@ describe("DownloadQueue", () => {
       expect(unlink).toHaveBeenCalledTimes(1);
     });
 
-    it("starts downloads for specs without tasks or files", async () => {
+    it("starts downloads for unfinished specs without tasks", async () => {
       const queue = new DownloadQueue();
 
       (download as jest.Mock).mockReturnValue(task);
@@ -504,6 +504,29 @@ describe("DownloadQueue", () => {
         url: "http://foo.com/a.mp3",
         path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
         createTime: Date.now() - 1000,
+      });
+      await queue.init({ domain: "mydomain" });
+      expect(task.resume).not.toHaveBeenCalled();
+
+      expect(download).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "foo" })
+      );
+    });
+
+    // This can happen in cases of TestFlight / XCode installs, somehow, where
+    // the disk no longer holds files, and yet your specs load just fine (as
+    // "finished").
+    it("starts downloads for 'finished' specs without tasks and files", async () => {
+      const queue = new DownloadQueue();
+
+      (download as jest.Mock).mockReturnValue(task);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+        finished: true,
       });
       await queue.init({ domain: "mydomain" });
       expect(task.resume).not.toHaveBeenCalled();
