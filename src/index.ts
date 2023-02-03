@@ -271,19 +271,7 @@ export default class DownloadQueue {
         if (existingTasks.some(task => task.id === spec.id)) {
           return;
         }
-        if (spec.finished) {
-          // Once in a while we think the spec is finished but the file isn't
-          // on disk. This can happen when XCode installs a new build, and
-          // sometimes through TestFlight.
-          const exists = await RNFS.exists(spec.path);
-
-          if (exists) {
-            return;
-          }
-
-          spec.finished = false; // We're not really finished, it seems.
-          await this.kvfs.write(this.keyFromId(spec.id), spec);
-        }
+        await this.reconcileFinishStateWithFile(spec);
         return this.start(spec);
       })
     );
@@ -613,7 +601,8 @@ export default class DownloadQueue {
 
   /**
    * Gets a remote or local url, preferring to the local path when possible. If
-   * the local file hasn't yet been downloaded, returns the remote url.
+   * the local file hasn't yet been downloaded, returns the remote url. Also
+   * returns the remote url if the record is being lazy-deleted.
    * @param url The remote URL to check for local availability
    * @returns A local file path if the URL has already been downloaded, else url
    */
@@ -622,7 +611,7 @@ export default class DownloadQueue {
 
     const spec = this.specs.find(spec => spec.url === url);
 
-    if (!spec || !spec.finished) {
+    if (!spec || !spec.finished || spec.createTime <= 0) {
       return url;
     }
 
@@ -812,6 +801,10 @@ export default class DownloadQueue {
   private async reviveTask(task: DownloadTask) {
     const spec = this.specs.find(spec => spec.id === task.id);
 
+    if (spec) {
+      await this.reconcileFinishStateWithFile(spec);
+    }
+
     // Don't revive finished tasks or ones that already have lazy deletes in
     // progress.
     if (spec && !spec.finished && spec.createTime > 0) {
@@ -827,9 +820,27 @@ export default class DownloadQueue {
           this.handlers?.onBegin?.(spec.url, task.totalBytes);
           break;
         case "DONE":
-          this.handlers?.onBegin?.(spec.url, task.totalBytes);
-          this.handlers?.onDone?.(spec.url, spec.path);
-          shouldAddTask = false;
+          {
+            const exists = await RNFS.exists(spec.path);
+
+            if (exists) {
+              spec.finished = true;
+              await this.kvfs.write(this.keyFromId(spec.id), spec);
+              this.handlers?.onBegin?.(spec.url, task.totalBytes);
+              this.handlers?.onDone?.(spec.url, spec.path);
+              shouldAddTask = false;
+            } else {
+              // If the spec thinks we're not done but the OS does, yet we
+              // can't find the file on disk, we'll leave shouldAddTask = true so
+              // that we begin the download again.
+              // Downloader docs say every task needs to be paused or stopped.
+              // So we stop here.
+              task.stop();
+              // Since the file is missing from disk, yet the downloader thinks
+              // it's done, we restart the download.
+              this.start(spec);
+            }
+          }
           break;
         case "STOPPED":
           this.start(spec);
@@ -858,7 +869,7 @@ export default class DownloadQueue {
         task.stop();
       }
     } else {
-      if (["DOWNLOADING", "PAUSED"].includes(task.state)) {
+      if (this.isTaskDownloading(task)) {
         task.stop();
 
         if (spec && !spec.finished) {
@@ -874,6 +885,31 @@ export default class DownloadQueue {
         }
       }
     }
+  }
+
+  /**
+   * Makes sure, if a spec thinks it's finished, that the file which backs it
+   * actually exists. If that file doesn't exist, we set finished === false.
+   * @returns true if spec is finished and the file exists
+   */
+  private async reconcileFinishStateWithFile(spec: Spec) {
+    if (spec.finished) {
+      // Once in a while we think the spec is finished but the file isn't
+      // on disk. This can happen when XCode installs a new build, and
+      // sometimes through TestFlight.
+      const exists = await RNFS.exists(spec.path);
+
+      if (exists) {
+        return;
+      }
+
+      spec.finished = false; // We're not really finished, it seems.
+      await this.kvfs.write(this.keyFromId(spec.id), spec);
+    }
+  }
+
+  private isTaskDownloading(task: DownloadTask) {
+    return ["DOWNLOADING", "PAUSED"].includes(task.state);
   }
 
   private extensionFromUri(uri: string) {
