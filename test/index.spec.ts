@@ -383,6 +383,7 @@ describe("DownloadQueue", () => {
       task.state = "DONE";
       task.totalBytes = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (exists as jest.Mock).mockReturnValue(true);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -403,6 +404,33 @@ describe("DownloadQueue", () => {
         `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`
       );
       expect(download).not.toHaveBeenCalled();
+    });
+
+    it("revives done specs from previous launches with missing files", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onDone: jest.fn(),
+      };
+
+      task.state = "DONE";
+      task.totalBytes = 8675309;
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (exists as jest.Mock).mockReturnValue(false);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init({ domain: "mydomain", handlers });
+
+      // Because it's done downloading, we don't expect resume()
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(handlers.onBegin).not.toHaveBeenCalled();
+      expect(handlers.onDone).not.toHaveBeenCalled();
+      expect(download).toHaveBeenCalledTimes(1);
     });
 
     it("restarts stopped specs from previous launches", async () => {
@@ -1937,6 +1965,70 @@ describe("DownloadQueue", () => {
           expect.objectContaining({
             url: "http://foo.com/a.mp3",
             complete: true,
+          }),
+        ])
+      );
+    });
+
+    it("should give you back the remote url when spec is lazy-deleted", async () => {
+      const queue = new DownloadQueue();
+      const fooTask = createBasicTask();
+      let fooPath = "tbd";
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string; url: string; destination: string }) => {
+          if (spec.url === "http://foo.com/a.mp3") {
+            fooPath = spec.destination;
+            return Object.assign(fooTask, {
+              done: jest.fn((handler: DoneHandler) => {
+                fooTask._done = handler;
+                return fooTask;
+              }),
+            });
+          }
+          return {
+            ...task,
+            id: spec.id,
+            path: spec.destination,
+          };
+        }
+      );
+
+      await queue.init({ domain: "mydomain" });
+      await queue.addUrl("http://foo.com/a.mp3");
+      await queue.addUrl("http://boo.com/a.mp3");
+
+      // Pretend we've downloaded only foo
+      (exists as jest.Mock).mockImplementation(path => path === fooPath);
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      await fooTask._done!();
+      await queue.removeUrl("http://foo.com/a.mp3", Date.now() + 50000);
+
+      const [fooU, booU] = await Promise.all([
+        queue.getAvailableUrl("http://foo.com/a.mp3"),
+        queue.getAvailableUrl("http://boo.com/a.mp3"),
+      ]);
+
+      expect(fooU).toBe("http://foo.com/a.mp3"); // Should give us remote URL
+      expect(booU).toBe("http://boo.com/a.mp3");
+
+      const restartedQueue = new DownloadQueue();
+
+      await restartedQueue.init({ domain: "mydomain" });
+      const [fooUR, statuses] = await Promise.all([
+        restartedQueue.getAvailableUrl("http://foo.com/a.mp3"),
+        restartedQueue.getQueueStatus(),
+      ]);
+
+      // We should be sure that the lazy-deleted status is reported as !complete
+      expect(fooUR).toBe("http://foo.com/a.mp3"); // Should give us remote URL
+      expect(statuses.length).toBe(1); // only boo should be left
+      expect(statuses).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            url: "http://boo.com/a.mp3",
+            complete: false,
           }),
         ])
       );
