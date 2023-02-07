@@ -272,7 +272,9 @@ export default class DownloadQueue {
           return;
         }
         await this.reconcileFinishStateWithFile(spec);
-        return this.start(spec);
+        if (!spec.finished && spec.createTime > 0) {
+          this.start(spec);
+        }
       })
     );
 
