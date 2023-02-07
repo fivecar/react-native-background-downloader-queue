@@ -564,6 +564,48 @@ describe("DownloadQueue", () => {
       );
     });
 
+    it("doesn't start downloads for 'finished' specs", async () => {
+      const queue = new DownloadQueue();
+
+      (download as jest.Mock).mockReturnValue(task);
+      (exists as jest.Mock).mockImplementation(() => true);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+        finished: true,
+      });
+      await queue.init({ domain: "mydomain" });
+
+      // This test protects against a regression. We used to restart downloads
+      // even for finished specs.
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(download).not.toHaveBeenCalled();
+    });
+
+    it("doesn't start downloads for lazy-deleted specs", async () => {
+      const queue = new DownloadQueue();
+
+      (download as jest.Mock).mockReturnValue(task);
+      (exists as jest.Mock).mockImplementation(() => true);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: -(Date.now() + 1000), // Delete one second into future
+        finished: false, // Force the issue by simulating a half-downloaded file
+      });
+      await queue.init({ domain: "mydomain" });
+
+      // This test protects against a regression. We used to restart downloads
+      // even for finished specs.
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(download).not.toHaveBeenCalled();
+    });
+
     it("enforces netInfo callbacks when activeNetworkTypes is passed", async () => {
       const queue = new DownloadQueue();
 
