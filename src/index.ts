@@ -873,17 +873,19 @@ export default class DownloadQueue {
     } else {
       if (this.isTaskDownloading(task)) {
         task.stop();
+      }
 
-        if (spec && !spec.finished) {
-          try {
-            // There might be a partially downloaded file on disk. We need to
-            // get rid of it in case a lazy-delete spec is revived, at which
-            // point an existing file on disk will be taken to be a
-            // successfully downloaded one.
-            await RNFS.unlink(spec.path);
-          } catch {
-            // Expected for missing files
-          }
+      // Given logic in the bigger "if" above, only unfinished lazy-deletes
+      // should pass this.
+      if (spec && !spec.finished) {
+        try {
+          // There might be a partially downloaded file on disk. We need to
+          // get rid of it in case a lazy-delete spec is revived, at which
+          // point an existing file on disk will be taken to be a
+          // successfully downloaded one.
+          await RNFS.unlink(spec.path);
+        } catch {
+          // Expected for missing files
         }
       }
     }
