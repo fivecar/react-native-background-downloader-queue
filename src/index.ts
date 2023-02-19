@@ -639,6 +639,19 @@ export default class DownloadQueue {
   }
 
   private start(spec: Spec) {
+    const path = this.pathFromId(spec.id, this.extensionFromUri(spec.url));
+
+    // This can happen in cases where you install a new build over an old one.
+    // The old home directory is gone, and yet you have a bunch of specs that
+    // refer to the old directory. So we update those dynamically here.
+    if (spec.path !== path) {
+      spec.path = path;
+      // We're playing a little fast and loose here, not awaiting the write, to
+      // simplify expectations of callers who classically expected a synchronous
+      // function. In theory, failing this silently async is harmless.
+      void this.kvfs.write(this.keyFromId(spec.id), spec);
+    }
+
     const task = download({
       id: spec.id,
       url: spec.url,
