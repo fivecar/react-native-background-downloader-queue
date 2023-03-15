@@ -825,6 +825,54 @@ describe("DownloadQueue", () => {
       expect(task.resume).toHaveBeenCalledTimes(1);
     });
 
+    it("should pause revived url when relaunched inactive", async () => {
+      const queue = new DownloadQueue();
+      let assignedId = "tbd";
+      let progresser: ProgressHandler;
+
+      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+        assignedId = spec.id;
+        return task;
+      });
+      (ensureDownloadsAreRunning as jest.Mock).mockImplementation(() => {
+        // This is exactly what the actual implementation does, to work around
+        // some bug in the library.
+        task.pause();
+        task.resume();
+      });
+
+      await queue.init({ domain: "mydomain" });
+      await queue.addUrl("http://foo.com/a.mp3");
+
+      expect(download).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
+
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([
+        Object.assign(task, {
+          id: assignedId,
+          progress: (handler: ProgressHandler) => {
+            progresser = handler;
+            return task;
+          }
+        }),
+      ]);
+
+      task.state = "PAUSED";
+
+      // Pretend app got launched again by using another queue
+      const relaunchQueue = new DownloadQueue();
+
+      await relaunchQueue.init({ domain: "mydomain", startActive: false });
+      expect(task.resume).toHaveBeenCalledTimes(1);
+
+      // We now call the progress() handler because we inserted a workaround for
+      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+      // Revived tasks get progress() without begin(), so we also need to pause
+      // those cases.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      progresser!(42, 420, 8675309);
+    });
+
     it("shouldn't re-download revived spec if file already downloaded", async () => {
       const queue = new DownloadQueue();
       let doner: DoneHandler | undefined;
@@ -1376,6 +1424,7 @@ describe("DownloadQueue", () => {
   describe("Pause / resume", () => {
     it("should start paused if requested on background downloading task", async () => {
       const queue = new DownloadQueue();
+      let beginner: BeginHandler;
 
       task.state = "DOWNLOADING";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
@@ -1390,18 +1439,35 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       // We expect pause TWO times because, according to downloader docs, we
       // should explicitly pause before reattaching handlers; we then pause
-      // gain because we specified !startActive.
+      // again because we specified !startActive.
       expect(task.pause).toHaveBeenCalledTimes(2);
       expect(download).not.toHaveBeenCalled();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            begin: (handler: BeginHandler) => {
+              beginner = handler;
+              return task;
+            },
+          });
+        }
+      );
 
       await queue.addUrl("http://boo.com/a.mp3");
+
+      // We now call the begin() handler because we inserted a workaround for
+      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      beginner!({ expectedBytes: 42, headers: {} });
+
       expect(task.pause).toHaveBeenCalledTimes(3); // for the added download
     });
 
     it("should start paused if requested on paused background task", async () => {
       const queue = new DownloadQueue();
+      let beginner: BeginHandler;
 
       task.state = "PAUSED";
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
@@ -1417,9 +1483,25 @@ describe("DownloadQueue", () => {
       expect(task.pause).toHaveBeenCalledTimes(1);
       expect(download).not.toHaveBeenCalled();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            begin: (handler: BeginHandler) => {
+              beginner = handler;
+              return task;
+            },
+          });
+        }
+      );
 
       await queue.addUrl("http://boo.com/a.mp3");
+
+      // We now call the begin() handler because we inserted a workaround for
+      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      beginner!({ expectedBytes: 42, headers: {} });
+
       expect(task.pause).toHaveBeenCalledTimes(2); // for the added download
     });
 
@@ -1568,13 +1650,32 @@ describe("DownloadQueue", () => {
 
     it("should respect the user's !startActive during network change", async () => {
       const queue = new DownloadQueue();
+      let beginner: BeginHandler;
+
       await queue.init({
         domain: "mydomain",
         netInfoAddEventListener: addEventListener,
         netInfoFetchState: fetch,
         startActive: false,
       });
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            begin: (handler: BeginHandler) => {
+              beginner = handler;
+              return task;
+            },
+          });
+        }
+      );
+
       await queue.addUrl("http://foo.com/a.mp3");
+      // We now call the begin() handler because we inserted a workaround for
+      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      beginner!({ expectedBytes: 42, headers: {} });
       expect(task.pause).toHaveBeenCalledTimes(1);
 
       netInfoHandler(createNetState(false));
