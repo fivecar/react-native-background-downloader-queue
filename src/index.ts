@@ -659,9 +659,14 @@ export default class DownloadQueue {
     });
 
     this.addTask(spec.url, task);
-    if (!this.active) {
-      task.pause();
-    }
+
+    // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+    // This is the ideal place to pause, but the downloader has a bug that
+    // doesn't respect that. So we defer the pause() until begin() or progress()
+    //
+    // if (!this.active) {
+    //   task.pause();
+    // }
   }
 
   /**
@@ -694,9 +699,23 @@ export default class DownloadQueue {
   private addTask(url: string, task: DownloadTask) {
     task
       .begin(data => {
+        // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+        // Basically the downloader doesn't respect the pause() if we call it
+        // right after download(). So we end up having to pause only after the
+        // download sends us this begin() callback. When #23 is fixed, we can
+        // in theory move this into the end of start(), after download().
+        if (!this.active) {
+          task.pause();
+        }
         this.handlers?.onBegin?.(url, data.expectedBytes);
       })
       .progress((percent, bytes, total) => {
+        // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+        // See note in begin() above. We can get progress callbacks even without
+        // begin() (e.g. in the case of resuming a background task upon launch).
+        if (!this.active) {
+          task.pause();
+        }
         this.handlers?.onProgress?.(url, percent, bytes, total);
       })
       .done(async () => {
