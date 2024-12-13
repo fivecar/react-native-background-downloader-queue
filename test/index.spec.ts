@@ -6,14 +6,14 @@ import {
   DownloadTask,
   ensureDownloadsAreRunning,
   ErrorHandler,
-  ProgressHandler
+  ProgressHandler,
 } from "@kesha-antonov/react-native-background-downloader";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   addEventListener,
   fetch,
   NetInfoState,
-  NetInfoStateType
+  NetInfoStateType,
 } from "@react-native-community/netinfo";
 import { mock } from "jest-mock-extended";
 import KVFS from "key-value-file-system";
@@ -307,6 +307,44 @@ describe("DownloadQueue", () => {
         )
       );
       expect(unlink).toHaveBeenCalledTimes(1);
+    });
+
+    it("removes duplicate specs with the same URLs", async () => {
+      const queue = new DownloadQueue();
+
+      (readdir as jest.Mock).mockImplementation(() => [
+        "foo.mp3",
+        "bar.mp3",
+        "foo.mp3",
+      ]);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo.mp3`,
+        createTime: Date.now() - 1000,
+      });
+      await kvfs.write("/mydomain/boo", {
+        id: "boo",
+        url: "http://foo.com/b.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/boo.mp3`,
+        createTime: Date.now() - 1000,
+      });
+      await kvfs.write("/mydomain/foo2", {
+        id: "foo2",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo.mp3`,
+        createTime: Date.now() - 800,
+      });
+      expect((await kvfs.readMulti("/mydomain/*")).length).toEqual(3);
+
+      await queue.init({ domain: "mydomain" });
+      const specs = await kvfs.readMulti("/mydomain/*");
+
+      expect(specs.length).toEqual(2);
+      expect(
+        specs.some(spec => "id" in spec && spec.id === "foo2")
+      ).toBeFalsy();
     });
 
     it("revives still-downloading specs from previous launches", async () => {
@@ -853,7 +891,7 @@ describe("DownloadQueue", () => {
           progress: (handler: ProgressHandler) => {
             progresser = handler;
             return task;
-          }
+          },
         }),
       ]);
 
