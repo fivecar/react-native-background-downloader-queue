@@ -233,11 +233,25 @@ export default class DownloadQueue {
       this.getDirFilenames(),
     ]);
     const now = Date.now();
-    const loadedSpecs = specData.map(spec => spec.value as Spec);
+    const seenUrls = new Set<string>();
+    const dupeSpecIds = new Set<string>();
+    const loadedSpecs = specData.map(data => {
+      const spec = data.value as Spec;
+
+      // This deduplicates specs that might have been written multiple times,
+      // which has happened in the past based on client use mistakes.
+      if (seenUrls.has(spec.url)) {
+        dupeSpecIds.add(spec.id);
+      } else {
+        seenUrls.add(spec.url);
+      }
+      return spec;
+    });
     const deletes = loadedSpecs.filter(
       spec =>
         spec.createTime === 0 ||
-        (spec.createTime < 0 && -spec.createTime <= now)
+        (spec.createTime < 0 && -spec.createTime <= now) ||
+        dupeSpecIds.has(spec.id)
     );
     const deleteIds = new Set(deletes.map(spec => spec.id));
 
@@ -482,7 +496,9 @@ export default class DownloadQueue {
     const liveUrls = new Set(
       this.specs.filter(spec => spec.createTime > 0).map(spec => spec.url)
     );
-    const urlsToAdd = urls.filter(url => !liveUrls.has(url));
+    // Using urlSet instead of urls in the filter automatically deduplicates
+    // any URLs the caller might have duplicated.
+    const urlsToAdd = [...urlSet].filter(url => !liveUrls.has(url));
     const specsToRemove = this.specs.filter(
       spec => !urlSet.has(spec.url) && spec.createTime > 0
     );
