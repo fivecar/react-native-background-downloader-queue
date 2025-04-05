@@ -725,38 +725,18 @@ export default class DownloadQueue {
         }
         this.handlers?.onBegin?.(url, data.expectedBytes);
       })
-      .progress((percent, bytes, total) => {
+      .progress(({ bytesDownloaded, bytesTotal }) => {
         // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
         // See note in begin() above. We can get progress callbacks even without
         // begin() (e.g. in the case of resuming a background task upon launch).
         if (!this.active) {
           task.pause();
         }
-        this.handlers?.onProgress?.(url, percent, bytes, total);
+        const percent = (bytesDownloaded / bytesTotal) * 100;
+        this.handlers?.onProgress?.(url, percent, bytesDownloaded, bytesTotal);
       })
-      .done(async () => {
-        const spec = this.specs.find(spec => spec.url === url);
-
-        if (!spec) {
-          // This in theory shouldn't ever happen -- basically the downloader
-          // telling us it's completed the download of a spec we've never heard
-          // about. But we're being extra careful here not to crash the client
-          // app if this ever happens.
-          return;
-        }
-
-        this.removeTask(task.id);
-        spec.finished = true;
-        await this.kvfs.write(this.keyFromId(spec.id), spec);
-
-        if (Platform.OS === "ios") {
-          completeHandler(task.id);
-        }
-
-        // Only notify the client once everything has completed successfully and
-        // our internal state is consistent.
-        this.handlers?.onDone?.(url, spec.path);
-      })
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises
+      .done(async () => await this.doDone(url, task))
       .error(error => {
         this.removeTask(task.id);
         this.handlers?.onError?.(url, error);
@@ -765,6 +745,30 @@ export default class DownloadQueue {
         this.ensureErrorTimerOn();
       });
     this.tasks.push(task);
+  }
+
+  private async doDone(url: string, task: DownloadTask) {
+    const spec = this.specs.find(spec => spec.url === url);
+
+    if (!spec) {
+      // This in theory shouldn't ever happen -- basically the downloader
+      // telling us it's completed the download of a spec we've never heard
+      // about. But we're being extra careful here not to crash the client
+      // app if this ever happens.
+      return;
+    }
+
+    this.removeTask(task.id);
+    spec.finished = true;
+    await this.kvfs.write(this.keyFromId(spec.id), spec);
+
+    if (Platform.OS === "ios") {
+      completeHandler(task.id);
+    }
+
+    // Only notify the client once everything has completed successfully and
+    // our internal state is consistent.
+    this.handlers?.onDone?.(url, spec.path);
   }
 
   private ensureErrorTimerOn() {
@@ -864,10 +868,10 @@ export default class DownloadQueue {
         case "DOWNLOADING":
           // Since we're already downloading, make sure the client at least
           // gets a notification that it's started.
-          this.handlers?.onBegin?.(spec.url, task.totalBytes);
+          this.handlers?.onBegin?.(spec.url, task.bytesTotal);
           break;
         case "PAUSED":
-          this.handlers?.onBegin?.(spec.url, task.totalBytes);
+          this.handlers?.onBegin?.(spec.url, task.bytesTotal);
           break;
         case "DONE":
           {
@@ -876,7 +880,7 @@ export default class DownloadQueue {
             if (exists) {
               spec.finished = true;
               await this.kvfs.write(this.keyFromId(spec.id), spec);
-              this.handlers?.onBegin?.(spec.url, task.totalBytes);
+              this.handlers?.onBegin?.(spec.url, task.bytesTotal);
               this.handlers?.onDone?.(spec.url, spec.path);
               shouldAddTask = false;
             } else {

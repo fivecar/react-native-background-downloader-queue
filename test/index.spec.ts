@@ -354,7 +354,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "DOWNLOADING";
-      task.totalBytes = 8675309;
+      task.bytesTotal = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
       (ensureDownloadsAreRunning as jest.Mock).mockImplementationOnce(() => {
         // This is exactly what the actual implementation does, to work around
@@ -374,7 +374,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(handlers.onBegin).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
-        task.totalBytes
+        task.bytesTotal
       );
       expect(download).not.toHaveBeenCalled();
     });
@@ -386,7 +386,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "PAUSED";
-      task.totalBytes = 8675309;
+      task.bytesTotal = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
       (ensureDownloadsAreRunning as jest.Mock).mockImplementationOnce(() => {
         // This is exactly what the actual implementation does, to work around
@@ -406,7 +406,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(handlers.onBegin).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
-        task.totalBytes
+        task.bytesTotal
       );
       expect(download).not.toHaveBeenCalled();
     });
@@ -419,7 +419,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "DONE";
-      task.totalBytes = 8675309;
+      task.bytesTotal = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
       (exists as jest.Mock).mockReturnValue(true);
 
@@ -435,7 +435,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onBegin).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
-        task.totalBytes
+        task.bytesTotal
       );
       expect(handlers.onDone).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
@@ -452,7 +452,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "DONE";
-      task.totalBytes = 8675309;
+      task.bytesTotal = 8675309;
       (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
       (exists as jest.Mock).mockReturnValue(false);
 
@@ -908,7 +908,7 @@ describe("DownloadQueue", () => {
       // Revived tasks get progress() without begin(), so we also need to pause
       // those cases.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      progresser!(42, 420, 8675309);
+      progresser!({ bytesDownloaded: 42, bytesTotal: 420 });
     });
 
     it("shouldn't re-download revived spec if file already downloaded", async () => {
@@ -941,7 +941,7 @@ describe("DownloadQueue", () => {
       expect(download).toHaveBeenCalledTimes(2); // Because it hadn't finished
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await doner!();
+      doner!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
       await queue.removeUrl("http://foo.com/a.mp3", 0);
       await queue.addUrl("http://foo.com/a.mp3");
 
@@ -1113,7 +1113,7 @@ describe("DownloadQueue", () => {
       );
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
+      task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
       const resBoo = await queue.getStatus("http://boo.com/a.mp3");
       expect(resBoo).toEqual(
         expect.objectContaining({ url: "http://boo.com/a.mp3", complete: true })
@@ -1217,9 +1217,15 @@ describe("DownloadQueue", () => {
       ]);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      idMap["http://foo.com/a.mp3"]._done!();
+      idMap["http://foo.com/a.mp3"]._done!({
+        bytesDownloaded: 8675309,
+        bytesTotal: 8675309,
+      });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      idMap["http://boo.com/a.mp3"]._done!();
+      idMap["http://boo.com/a.mp3"]._done!({
+        bytesDownloaded: 8675309,
+        bytesTotal: 8675309,
+      });
 
       const res = await queue.getQueueStatus();
       expect(res).toEqual(
@@ -1272,9 +1278,15 @@ describe("DownloadQueue", () => {
         "http://boo.com/a.mp3",
       ]);
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      idMap["http://foo.com/a.mp3"]._done!();
+      idMap["http://foo.com/a.mp3"]._done!({
+        bytesDownloaded: 8675309,
+        bytesTotal: 8675309,
+      });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      idMap["http://boo.com/a.mp3"]._done!();
+      idMap["http://boo.com/a.mp3"]._done!({
+        bytesDownloaded: 8675309,
+        bytesTotal: 8675309,
+      });
       await queue.removeUrl("http://boo.com/a.mp3");
 
       const res = await queue.getQueueStatus();
@@ -1445,8 +1457,8 @@ describe("DownloadQueue", () => {
       task._begin!({ expectedBytes: 42, headers: {} });
       expect(handlers.onBegin).toHaveBeenCalledTimes(1);
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
       expect(handlers.onDone).toHaveBeenCalledTimes(1);
 
       await queue.removeUrl("http://foo.com/a.mp3", 0);
@@ -1907,7 +1919,7 @@ describe("DownloadQueue", () => {
       expect(jest.getTimerCount()).toBe(0);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._error!("something went wrong", "500");
+      task._error!({ error: "something went wrong", errorCode: 500 });
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
       await advanceThroughNextTimersAndPromises();
@@ -1917,8 +1929,8 @@ describe("DownloadQueue", () => {
       // Previous task should still be active, so no more download() calls
       expect(download).toHaveBeenCalledTimes(2);
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
       // The interval should be cleared on successful downloads
       expect(jest.getTimerCount()).toBe(0);
     });
@@ -1949,11 +1961,17 @@ describe("DownloadQueue", () => {
 
       expect(jest.getTimerCount()).toBe(0);
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      Object.values(errMap)[0]!("something went wrong", "500");
+      Object.values(errMap)[0]!({
+        error: "something went wrong",
+        errorCode: 500,
+      });
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      Object.values(errMap)[1]!("something else went wrong", "403");
+      Object.values(errMap)[1]!({
+        error: "something else went wrong",
+        errorCode: 403,
+      });
       expect(jest.getTimerCount()).toBe(1);
 
       // Get downloads scheduled
@@ -1961,10 +1979,16 @@ describe("DownloadQueue", () => {
 
       // Now pretend to finish one successfully.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      Object.values(doneMap)[0]!();
+      Object.values(doneMap)[0]!({
+        bytesDownloaded: 8675309,
+        bytesTotal: 8675309,
+      });
       expect(jest.getTimerCount()).toBe(1); // Still need an interval the other.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      Object.values(doneMap)[1]!();
+      Object.values(doneMap)[1]!({
+        bytesDownloaded: 8675309,
+        bytesTotal: 8675309,
+      });
       expect(jest.getTimerCount()).toBe(0); // Now finally done
     });
 
@@ -1984,7 +2008,7 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com/a.mp3");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._error!("something went wrong", "500");
+      task._error!({ error: "something went wrong", errorCode: 500 });
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
       queue.pauseAll();
@@ -2012,7 +2036,7 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com/a.mp3");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._error!("something went wrong", "500");
+      task._error!({ error: "something went wrong", errorCode: 500 });
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
       queue.terminate();
@@ -2046,8 +2070,8 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com/a.mp3");
 
       // Mark it finished... but RNFS will say the file's not there.
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       const url = await queue.getAvailableUrl("http://foo.com/a.mp3");
       expect(url).toBe("http://foo.com/a.mp3");
@@ -2070,8 +2094,8 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       const statuses = await queue.getQueueStatus();
       expect(statuses).toEqual(
@@ -2120,8 +2144,8 @@ describe("DownloadQueue", () => {
 
       expect(unfinishedUrl).toBe("http://foo.com/a.mp3");
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await fooTask._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await fooTask._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       const [fooU, booU] = await Promise.all([
         queue.getAvailableUrl("http://foo.com/a.mp3"),
@@ -2182,8 +2206,8 @@ describe("DownloadQueue", () => {
       // Pretend we've downloaded only foo
       (exists as jest.Mock).mockImplementation(path => path === fooPath);
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await fooTask._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await fooTask._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
       await queue.removeUrl("http://foo.com/a.mp3", Date.now() + 50000);
 
       const [fooU, booU] = await Promise.all([
@@ -2250,11 +2274,11 @@ describe("DownloadQueue", () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       task._begin!({ expectedBytes: 300, headers: {} });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._progress!(0.5, 500, 1000);
+      task._progress!({ bytesDownloaded: 500, bytesTotal: 1000 });
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._error!("foo", 500);
+      task._error!({ error: "foo", errorCode: 500 });
 
       expect(handlers.onBegin).toHaveBeenCalledTimes(1);
       expect(handlers.onProgress).toHaveBeenCalledTimes(1);
@@ -2284,8 +2308,8 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain", handlers, urlToPath });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await doner!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await doner!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       expect(handlers.onDone).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
@@ -2314,8 +2338,8 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain", handlers });
       await queue.addUrl("http:invalid.url");
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await task._done!();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
+      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       expect(handlers.onDone).toHaveBeenCalledWith(
         "http:invalid.url",
@@ -2345,8 +2369,10 @@ describe("DownloadQueue", () => {
       // Normally, done() shouldn't be called by the framework after a url has
       // been removed (because removeUrl calls stop()). But we want to be extra
       // careful not to crash or falsely say it's done.
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      await expect(doner!()).resolves.not.toThrow();
+      await expect(
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        doner!({ bytesDownloaded: 8675309, bytesTotal: 8675309 })
+      ).resolves.not.toThrow();
       expect(handlers.onDone).not.toHaveBeenCalled();
     });
   });
