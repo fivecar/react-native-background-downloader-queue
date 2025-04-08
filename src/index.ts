@@ -732,8 +732,8 @@ export default class DownloadQueue {
         if (!this.active) {
           task.pause();
         }
-        const percent = (bytesDownloaded / bytesTotal) * 100;
-        this.handlers?.onProgress?.(url, percent, bytesDownloaded, bytesTotal);
+        const fraction = bytesDownloaded / bytesTotal;
+        this.handlers?.onProgress?.(url, fraction, bytesDownloaded, bytesTotal);
       })
       // eslint-disable-next-line @typescript-eslint/no-misused-promises
       .done(async () => await this.doDone(url, task))
