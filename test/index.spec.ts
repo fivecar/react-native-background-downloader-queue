@@ -494,6 +494,74 @@ describe("DownloadQueue", () => {
       expect(handlers.onDone).not.toHaveBeenCalled();
     });
 
+    it("should call onDone for already-finished specs with existing tasks", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onDone: jest.fn(),
+      };
+
+      task.state = "STOPPED";
+      task.bytesTotal = 8675309;
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (exists as jest.Mock).mockReturnValue(true);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+        finished: true,
+      });
+      await queue.init({ domain: "mydomain", handlers });
+
+      // Should not restart download for finished specs
+      expect(download).not.toHaveBeenCalled();
+      expect(task.resume).not.toHaveBeenCalled();
+
+      // Should call handlers for the finished spec
+      expect(handlers.onBegin).toHaveBeenCalledWith(
+        "http://foo.com/a.mp3",
+        task.bytesTotal
+      );
+      expect(handlers.onDone).toHaveBeenCalledWith(
+        "http://foo.com/a.mp3",
+        `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`
+      );
+    });
+
+    it("should not call onDone for lazy-deleted finished specs with existing tasks", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onDone: jest.fn(),
+      };
+
+      task.state = "PAUSED"; // Use PAUSED so isTaskDownloading returns true
+      task.bytesTotal = 8675309;
+      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (exists as jest.Mock).mockReturnValue(true);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: -(Date.now() + 1000), // Lazy delete
+        finished: true,
+      });
+      await queue.init({ domain: "mydomain", handlers });
+
+      // Should stop the task since it's downloading/paused
+      expect(task.stop).toHaveBeenCalled();
+
+      // Should not call handlers for lazy-deleted specs
+      expect(handlers.onBegin).not.toHaveBeenCalled();
+      expect(handlers.onDone).not.toHaveBeenCalled();
+
+      // Should not restart download
+      expect(download).not.toHaveBeenCalled();
+    });
+
     it("restarts failed specs from previous launches", async () => {
       const queue = new DownloadQueue();
       const handlers: DownloadQueueHandlers = {
@@ -642,6 +710,70 @@ describe("DownloadQueue", () => {
       // even for finished specs.
       expect(task.resume).not.toHaveBeenCalled();
       expect(download).not.toHaveBeenCalled();
+    });
+
+    it("should call onDone for already-finished specs without tasks", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onDone: jest.fn(),
+      };
+
+      (exists as jest.Mock).mockImplementation(() => true);
+      (stat as jest.Mock).mockReturnValue({ size: 8675309 });
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+        finished: true,
+      });
+
+      await queue.init({ domain: "mydomain", handlers });
+
+      // Should not start a new download for finished specs
+      expect(download).not.toHaveBeenCalled();
+
+      // Should call handlers for the finished spec
+      expect(handlers.onBegin).toHaveBeenCalledWith(
+        "http://foo.com/a.mp3",
+        8675309
+      );
+      expect(handlers.onDone).toHaveBeenCalledWith(
+        "http://foo.com/a.mp3",
+        `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`
+      );
+    });
+
+    it("should restart download if finished spec has missing file", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onDone: jest.fn(),
+      };
+
+      (exists as jest.Mock).mockImplementation(() => true);
+      (stat as jest.Mock).mockImplementation(() => {
+        throw new Error("File not found");
+      });
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+        finished: true,
+      });
+
+      await queue.init({ domain: "mydomain", handlers });
+
+      // Should restart download since file is missing
+      expect(download).toHaveBeenCalledTimes(1);
+
+      // Should not call handlers yet since file is missing
+      expect(handlers.onBegin).not.toHaveBeenCalled();
+      expect(handlers.onDone).not.toHaveBeenCalled();
     });
 
     it("enforces netInfo callbacks when activeNetworkTypes is passed", async () => {
