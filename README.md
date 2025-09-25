@@ -65,6 +65,8 @@ For full documentation, see the javaDoc style comments in the package which auto
 
 Gets everything started (e.g. reconstitutes state from storage and reconciles it with downloads that might have completed in the background, subscribes to events, etc). You must call this first.
 
+During initialization, `onBegin` and `onDone` handlers will be called for any files that were already successfully downloaded in previous app sessions, ensuring your app knows about all available files.
+
 You can pass any of the following options, or nothing at all:
 
 | Option | Type | Default | Description |
@@ -81,9 +83,9 @@ Here are the optional notification handlers you can pass to be informed of downl
 
 | Handler | Description |
 |---|---|
-|`onBegin?: (url: string, totalBytes: number) => void` | Called when the download has begun and the total number of bytes expected is known.|
+|`onBegin?: (url: string, totalBytes: number) => void` | Called when the download has begun and the total number of bytes expected is known. Also called during `init()` for files that were already downloaded, just before `onDone` is called.|
 |`onProgress?: (url: string, fractionWritten: number, bytesWritten: number, totalBytes: number) => void` | Called at most every 1.5 seconds for any file while it's downloading. `fractionWritten` is between 0.0 and 1.0|
-|`onDone?: (url: string, localPath: string) => void`| Called when the download has completed successfully. `localPath` will be a file path.|
+|`onDone?: (url: string, localPath: string) => void`| Called when the download has completed successfully. `localPath` will be a file path. This is also called during `init()` for any files that were already downloaded in previous app sessions, giving you a complete picture of all available files.|
 |`onWillRemove?: (url: string) => Promise<void>`| Called before any url is removed from the queue. This is async because `removeUrl` (and also `setQueue`, when it needs to remove some urls) will block until you return from this, giving you the opportunity remove any dependencies on any downloaded local file before it's deleted.|
 |`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file. Note that this is mostly for you to communicate something to the user, or to do other housekeeping; DownloadQueue will automatically re-attempt the download every minute (while you're online) until it succeeds.|
 

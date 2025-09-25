@@ -282,11 +282,27 @@ export default class DownloadQueue {
     // Now start downloads for specs that haven't finished
     await Promise.all(
       this.specs.map(async spec => {
-        if (existingTasks.some(task => task.id === spec.id)) {
+        if (
+          existingTasks.some(task => task.id === spec.id) ||
+          spec.createTime <= 0
+        ) {
           return;
         }
         await this.reconcileFinishStateWithFile(spec);
-        if (!spec.finished && spec.createTime > 0) {
+        if (spec.finished) {
+          // Notify handlers about already-finished specs without tasks
+          try {
+            const fileSpec = await RNFS.stat(spec.path);
+
+            this.handlers?.onBegin?.(spec.url, fileSpec.size);
+            this.handlers?.onDone?.(spec.url, spec.path);
+          } catch {
+            // File doesn't exist, treat as not finished
+            spec.finished = false;
+            await this.kvfs.write(this.keyFromId(spec.id), spec);
+            this.start(spec);
+          }
+        } else {
           this.start(spec);
         }
       })
@@ -927,9 +943,19 @@ export default class DownloadQueue {
         task.stop();
       }
 
+      if (!spec) {
+        return;
+      }
+
       // Given logic in the bigger "if" above, only unfinished lazy-deletes
       // should pass this.
-      if (spec && !spec.finished) {
+      if (spec.finished) {
+        if (spec.createTime > 0) {
+          // Notify handlers about already-finished specs
+          this.handlers?.onBegin?.(spec.url, task.bytesTotal);
+          this.handlers?.onDone?.(spec.url, spec.path);
+        }
+      } else {
         try {
           // There might be a partially downloaded file on disk. We need to
           // get rid of it in case a lazy-delete spec is revived, at which
