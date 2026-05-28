@@ -731,6 +731,12 @@ export default class DownloadQueue {
   private addTask(url: string, task: DownloadTask) {
     task
       .begin(data => {
+        // The task may have been removed (e.g. via removeUrl) before a trailing
+        // begin callback already queued on the JS bridge fires. Like doDone, we
+        // no-op so we don't notify clients about a download that's gone.
+        if (!this.tasks.some(t => t.id === task.id)) {
+          return;
+        }
         // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
         // Basically the downloader doesn't respect the pause() if we call it
         // right after download(). So we end up having to pause only after the
@@ -742,6 +748,11 @@ export default class DownloadQueue {
         this.handlers?.onBegin?.(url, data.expectedBytes);
       })
       .progress(({ bytesDownloaded, bytesTotal }) => {
+        // See note in begin() above: a trailing progress callback can fire after
+        // the task has been removed, so we no-op to avoid re-notifying clients.
+        if (!this.tasks.some(t => t.id === task.id)) {
+          return;
+        }
         // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
         // See note in begin() above. We can get progress callbacks even without
         // begin() (e.g. in the case of resuming a background task upon launch).
