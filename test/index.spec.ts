@@ -2507,5 +2507,56 @@ describe("DownloadQueue", () => {
       ).resolves.not.toThrow();
       expect(handlers.onDone).not.toHaveBeenCalled();
     });
+
+    it("should not call begin/progress after a url has been removed", async () => {
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+        onProgress: jest.fn(),
+        onWillRemove: jest.fn(() => Promise.resolve()),
+      };
+      const queue = new DownloadQueue();
+
+      (download as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            begin: jest.fn(handler => {
+              task._begin = handler;
+              return task;
+            }),
+            progress: jest.fn(handler => {
+              task._progress = handler;
+              return task;
+            }),
+          });
+        }
+      );
+
+      await queue.init({ domain: "mydomain", handlers });
+      await queue.addUrl("http://foo.com/a.mp3");
+
+      // Drive the download to a partial progress.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._begin!({ expectedBytes: 1000, headers: {} });
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._progress!({ bytesDownloaded: 420, bytesTotal: 1000 });
+      expect(handlers.onBegin).toHaveBeenCalledTimes(1);
+      expect(handlers.onProgress).toHaveBeenCalledTimes(1);
+
+      // Remove the url, which fires onWillRemove and stops the task.
+      await queue.removeUrl("http://foo.com/a.mp3");
+      expect(handlers.onWillRemove).toHaveBeenCalledTimes(1);
+
+      // Trailing begin/progress callbacks can still fire on the now-removed task
+      // (e.g. events already queued on the JS bridge). They must not re-notify
+      // the client, which would leave their UI stuck at a stale fraction.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._begin!({ expectedBytes: 1000, headers: {} });
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._progress!({ bytesDownloaded: 420, bytesTotal: 1000 });
+
+      expect(handlers.onBegin).toHaveBeenCalledTimes(1);
+      expect(handlers.onProgress).toHaveBeenCalledTimes(1);
+    });
   });
 });
