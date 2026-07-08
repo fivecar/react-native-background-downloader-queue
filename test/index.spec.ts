@@ -1,13 +1,12 @@
 import {
   BeginHandler,
-  checkForExistingDownloads,
+  createDownloadTask,
   DoneHandler,
-  download,
   DownloadTask,
-  ensureDownloadsAreRunning,
   ErrorHandler,
+  getExistingDownloadTasks,
   ProgressHandler,
-} from "@kesha-antonov/react-native-background-downloader";
+} from "@fivecar/react-native-background-downloader";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   addEventListener,
@@ -43,11 +42,10 @@ jest.mock("@react-native-async-storage/async-storage", () => {
 
 // Not sure why putting this in /__mocks__ doesn't work, when things like
 // react-native-fs do. Spent too long researching it.
-jest.mock("@kesha-antonov/react-native-background-downloader", () => {
+jest.mock("@fivecar/react-native-background-downloader", () => {
   return {
-    checkForExistingDownloads: jest.fn(() => []),
-    ensureDownloadsAreRunning: jest.fn(() => []),
-    download: jest.fn(() => ({})),
+    getExistingDownloadTasks: jest.fn(() => []),
+    createDownloadTask: jest.fn(() => ({})),
     completeHandler: jest.fn(),
     DownloadTaskState: {
       DOWNLOADING: "DOWNLOADING",
@@ -148,6 +146,7 @@ function createBasicTask(): TaskWithHandlers {
     resume: jest.fn(() => baseTask),
     pause: jest.fn(() => baseTask),
     stop: jest.fn(() => baseTask),
+    start: jest.fn(() => baseTask),
   });
 }
 
@@ -158,8 +157,8 @@ async function expectPublicsToFail(queue: DownloadQueue) {
   await expect(queue.removeUrl("whatevs")).rejects.toThrow();
   await expect(queue.setQueue([])).rejects.toThrow();
   await expect(queue.getQueueStatus()).rejects.toThrow();
-  expect(() => queue.pauseAll()).toThrow();
-  expect(() => queue.resumeAll()).toThrow();
+  await expect(queue.pauseAll()).rejects.toThrow();
+  await expect(queue.resumeAll()).rejects.toThrow();
   await expect(queue.getAvailableUrl("whatevs")).rejects.toThrow();
   await expect(queue.getStatus("whatevs")).rejects.toThrow();
   await expect(queue.setActiveNetworkTypes(["boo"])).rejects.toThrow();
@@ -190,9 +189,8 @@ describe("DownloadQueue", () => {
     (unlink as jest.Mock).mockImplementation(() => Promise.resolve());
     (stat as jest.Mock).mockReturnValue({ size: 8675309 });
 
-    (download as jest.Mock).mockReturnValue(task);
-    (checkForExistingDownloads as jest.Mock).mockReturnValue([]);
-    (ensureDownloadsAreRunning as jest.Mock).mockReturnValue(undefined);
+    (createDownloadTask as jest.Mock).mockReturnValue(task);
+    (getExistingDownloadTasks as jest.Mock).mockReturnValue([]);
   });
 
   afterEach(async () => {
@@ -343,7 +341,9 @@ describe("DownloadQueue", () => {
 
       expect(specs.length).toEqual(2);
       expect(
-        specs.some(spec => "id" in spec && spec.id === "foo2")
+        specs.some(
+          spec => "id" in spec && (spec as { id?: string }).id === "foo2"
+        )
       ).toBeFalsy();
     });
 
@@ -355,13 +355,7 @@ describe("DownloadQueue", () => {
 
       task.state = "DOWNLOADING";
       task.bytesTotal = 8675309;
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
-      (ensureDownloadsAreRunning as jest.Mock).mockImplementationOnce(() => {
-        // This is exactly what the actual implementation does, to work around
-        // some bug in the library.
-        task.pause();
-        task.resume();
-      });
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -371,12 +365,15 @@ describe("DownloadQueue", () => {
       });
       await queue.init({ domain: "mydomain", handlers });
 
-      expect(task.resume).toHaveBeenCalledTimes(1);
+      // Since the queue is active, a revived DOWNLOADING task shouldn't be
+      // paused or resumed -- it's just left running.
+      expect(task.pause).not.toHaveBeenCalled();
+      expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onBegin).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
         task.bytesTotal
       );
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
     it("revives paused specs from previous launches", async () => {
@@ -387,13 +384,7 @@ describe("DownloadQueue", () => {
 
       task.state = "PAUSED";
       task.bytesTotal = 8675309;
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
-      (ensureDownloadsAreRunning as jest.Mock).mockImplementationOnce(() => {
-        // This is exactly what the actual implementation does, to work around
-        // some bug in the library.
-        task.pause();
-        task.resume();
-      });
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -403,12 +394,14 @@ describe("DownloadQueue", () => {
       });
       await queue.init({ domain: "mydomain", handlers });
 
-      expect(task.resume).toHaveBeenCalledTimes(1);
+      // PAUSED tasks are left alone (not auto-resumed) upon revival.
+      expect(task.pause).not.toHaveBeenCalled();
+      expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onBegin).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
         task.bytesTotal
       );
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
     it("revives done specs from previous launches", async () => {
@@ -420,7 +413,7 @@ describe("DownloadQueue", () => {
 
       task.state = "DONE";
       task.bytesTotal = 8675309;
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
       (exists as jest.Mock).mockReturnValue(true);
 
       await kvfs.write("/mydomain/foo", {
@@ -441,7 +434,7 @@ describe("DownloadQueue", () => {
         "http://foo.com/a.mp3",
         `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`
       );
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
     it("revives done specs from previous launches with missing files", async () => {
@@ -453,7 +446,7 @@ describe("DownloadQueue", () => {
 
       task.state = "DONE";
       task.bytesTotal = 8675309;
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
       (exists as jest.Mock).mockReturnValue(false);
 
       await kvfs.write("/mydomain/foo", {
@@ -468,7 +461,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onBegin).not.toHaveBeenCalled();
       expect(handlers.onDone).not.toHaveBeenCalled();
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
     });
 
     it("restarts stopped specs from previous launches", async () => {
@@ -479,7 +472,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "STOPPED";
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -489,7 +482,8 @@ describe("DownloadQueue", () => {
       });
       await queue.init({ domain: "mydomain", handlers });
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
+      expect(task.start).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onDone).not.toHaveBeenCalled();
     });
@@ -503,7 +497,7 @@ describe("DownloadQueue", () => {
 
       task.state = "STOPPED";
       task.bytesTotal = 8675309;
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
       (exists as jest.Mock).mockReturnValue(true);
 
       await kvfs.write("/mydomain/foo", {
@@ -516,7 +510,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain", handlers });
 
       // Should not restart download for finished specs
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
       expect(task.resume).not.toHaveBeenCalled();
 
       // Should call handlers for the finished spec
@@ -539,7 +533,7 @@ describe("DownloadQueue", () => {
 
       task.state = "PAUSED"; // Use PAUSED so isTaskDownloading returns true
       task.bytesTotal = 8675309;
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
       (exists as jest.Mock).mockReturnValue(true);
 
       await kvfs.write("/mydomain/foo", {
@@ -559,7 +553,7 @@ describe("DownloadQueue", () => {
       expect(handlers.onDone).not.toHaveBeenCalled();
 
       // Should not restart download
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
     it("restarts failed specs from previous launches", async () => {
@@ -570,7 +564,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "FAILED";
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -584,7 +578,8 @@ describe("DownloadQueue", () => {
       expect(jest.getTimerCount()).toEqual(1); // error retry timer
 
       await advanceThroughNextTimersAndPromises();
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
+      expect(task.start).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onDone).not.toHaveBeenCalled();
       expect(handlers.onError).toHaveBeenCalledTimes(1);
@@ -593,17 +588,17 @@ describe("DownloadQueue", () => {
     it("stops tasks from previous launches without specs if they're still going", async () => {
       const queue = new DownloadQueue();
 
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await queue.init({ domain: "mydomain" });
       expect(task.stop).not.toHaveBeenCalled();
 
-      queue.terminate();
+      await queue.terminate();
       task.state = "PAUSED";
       await queue.init({ domain: "mydomain" });
       expect(task.stop).toHaveBeenCalledTimes(1);
 
-      queue.terminate();
+      await queue.terminate();
       task.state = "DOWNLOADING";
       await queue.init({ domain: "mydomain" });
       expect(task.stop).toHaveBeenCalledTimes(2);
@@ -612,7 +607,7 @@ describe("DownloadQueue", () => {
     it("stops lazy-deleted tasks from previous launches", async () => {
       const queue = new DownloadQueue();
 
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
       await kvfs.write("/mydomain/foo", {
         id: task.id,
         url: "http://foo.com/a.mp3",
@@ -631,7 +626,7 @@ describe("DownloadQueue", () => {
     it("starts downloads for unfinished specs without tasks", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (createDownloadTask as jest.Mock).mockReturnValue(task);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -642,9 +637,10 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain" });
       expect(task.resume).not.toHaveBeenCalled();
 
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({ id: "foo" })
       );
+      expect(task.start).toHaveBeenCalledTimes(1);
     });
 
     // This can happen in cases of TestFlight / XCode installs, somehow, where
@@ -653,7 +649,7 @@ describe("DownloadQueue", () => {
     it("starts downloads for 'finished' specs without tasks and files", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (createDownloadTask as jest.Mock).mockReturnValue(task);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -665,7 +661,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain" });
       expect(task.resume).not.toHaveBeenCalled();
 
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({ id: "foo" })
       );
     });
@@ -673,7 +669,7 @@ describe("DownloadQueue", () => {
     it("doesn't start downloads for 'finished' specs", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (createDownloadTask as jest.Mock).mockReturnValue(task);
       (exists as jest.Mock).mockImplementation(() => true);
 
       await kvfs.write("/mydomain/foo", {
@@ -688,13 +684,13 @@ describe("DownloadQueue", () => {
       // This test protects against a regression. We used to restart downloads
       // even for finished specs.
       expect(task.resume).not.toHaveBeenCalled();
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
     it("doesn't start downloads for lazy-deleted specs", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (createDownloadTask as jest.Mock).mockReturnValue(task);
       (exists as jest.Mock).mockImplementation(() => true);
 
       await kvfs.write("/mydomain/foo", {
@@ -709,7 +705,7 @@ describe("DownloadQueue", () => {
       // This test protects against a regression. We used to restart downloads
       // even for finished specs.
       expect(task.resume).not.toHaveBeenCalled();
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
     it("should call onDone for already-finished specs without tasks", async () => {
@@ -733,7 +729,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain", handlers });
 
       // Should not start a new download for finished specs
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
 
       // Should call handlers for the finished spec
       expect(handlers.onBegin).toHaveBeenCalledWith(
@@ -769,7 +765,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain", handlers });
 
       // Should restart download since file is missing
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
 
       // Should not call handlers yet since file is missing
       expect(handlers.onBegin).not.toHaveBeenCalled();
@@ -801,7 +797,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
 
       task.state = "DOWNLOADING";
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -815,7 +811,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       expect(task.stop).not.toHaveBeenCalled();
 
-      queue.terminate();
+      await queue.terminate();
       expect(task.stop).toHaveBeenCalled();
     });
 
@@ -826,7 +822,7 @@ describe("DownloadQueue", () => {
       };
 
       task.state = "DOWNLOADING";
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -837,7 +833,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain", handlers });
       expect(handlers.onBegin).toHaveBeenCalledTimes(1);
 
-      queue.terminate();
+      await queue.terminate();
       expect(task.stop).toHaveBeenCalled();
 
       await queue.init({ domain: "mydomain", handlers });
@@ -848,7 +844,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
 
       await queue.init({ domain: "mydomain" });
-      queue.terminate();
+      await queue.terminate();
 
       await expectPublicsToFail(queue);
 
@@ -861,7 +857,7 @@ describe("DownloadQueue", () => {
     it("should add a url while preserving its extension", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) =>
         Object.assign(task, {
           id: spec.id,
         })
@@ -869,18 +865,19 @@ describe("DownloadQueue", () => {
 
       await queue.init({ domain: "mydomain", urlToPath });
       await queue.addUrl("http://foo.com/a.mp3");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/a.mp3",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}.mp3`,
         })
       );
+      expect(task.start).toHaveBeenCalledTimes(1);
     });
 
     it("should add a url without an extension", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) =>
         Object.assign(task, {
           id: spec.id,
         })
@@ -888,47 +885,47 @@ describe("DownloadQueue", () => {
 
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/a",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
         })
       );
 
-      queue.terminate();
+      await queue.terminate();
       await queue.init({ domain: "mydomain", urlToPath });
-      (download as jest.Mock).mockClear(); // Clear out revival of prev url
+      (createDownloadTask as jest.Mock).mockClear(); // Clear out revival of prev url
       await queue.addUrl("http://foo.com/a.mp3");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/a.mp3",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}.mp3`,
         })
       );
-      (download as jest.Mock).mockClear();
+      (createDownloadTask as jest.Mock).mockClear();
       // This tests whether paths/extensions are dealt with properly when a url
       // ends in a slash.
       await queue.addUrl("http://foo.com/abc/");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/abc/",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
         })
       );
-      (download as jest.Mock).mockClear();
+      (createDownloadTask as jest.Mock).mockClear();
       // Tests whether paths/extensions with terminating periods are handled
       await queue.addUrl("http://foo.com/a/bc.");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/a/bc.",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
         })
       );
-      (download as jest.Mock).mockClear();
+      (createDownloadTask as jest.Mock).mockClear();
       // Tests whether paths with no extensions are handled when urlToPath is
       // given by caller
       await queue.addUrl("http://foo.com/a/bc");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/a/bc",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
@@ -936,11 +933,11 @@ describe("DownloadQueue", () => {
       );
 
       // Now make sure termination clears out the urlPath callback
-      queue.terminate();
+      await queue.terminate();
       await queue.init({ domain: "mydomain" });
-      (download as jest.Mock).mockClear(); // Clear out revival of prev url
+      (createDownloadTask as jest.Mock).mockClear(); // Clear out revival of prev url
       await queue.addUrl("http://foo.com/b.mp3");
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({
           url: "http://foo.com/b.mp3",
           destination: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/${task.id}`,
@@ -951,36 +948,31 @@ describe("DownloadQueue", () => {
     it("shouldn't add the same url twice", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockReturnValue(task);
+      (createDownloadTask as jest.Mock).mockReturnValue(task);
 
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
       await queue.addUrl("http://foo.com/a.mp3");
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
+      expect(task.start).toHaveBeenCalledTimes(1);
     });
 
     it("should revive added url upon relaunch", async () => {
       const queue = new DownloadQueue();
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return task;
-      });
-      (ensureDownloadsAreRunning as jest.Mock).mockImplementation(() => {
-        // This is exactly what the actual implementation does, to work around
-        // some bug in the library.
-        task.pause();
-        task.resume();
       });
 
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([
         Object.assign(task, {
           id: assignedId,
         }),
@@ -992,62 +984,51 @@ describe("DownloadQueue", () => {
       const relaunchQueue = new DownloadQueue();
 
       await relaunchQueue.init({ domain: "mydomain" });
-      expect(task.resume).toHaveBeenCalledTimes(1);
+      // Revival should reattach to the existing task rather than starting a
+      // new download, and shouldn't touch pause/resume for an already-paused
+      // task.
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
     });
 
     it("should pause revived url when relaunched inactive", async () => {
       const queue = new DownloadQueue();
       let assignedId = "tbd";
-      let progresser: ProgressHandler;
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return task;
-      });
-      (ensureDownloadsAreRunning as jest.Mock).mockImplementation(() => {
-        // This is exactly what the actual implementation does, to work around
-        // some bug in the library.
-        task.pause();
-        task.resume();
       });
 
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([
         Object.assign(task, {
           id: assignedId,
-          progress: (handler: ProgressHandler) => {
-            progresser = handler;
-            return task;
-          },
         }),
       ]);
 
-      task.state = "PAUSED";
+      // Only a DOWNLOADING revived task needs to be explicitly paused when
+      // relaunched inactive; a PAUSED task is already paused.
+      task.state = "DOWNLOADING";
 
       // Pretend app got launched again by using another queue
       const relaunchQueue = new DownloadQueue();
 
       await relaunchQueue.init({ domain: "mydomain", startActive: false });
-      expect(task.resume).toHaveBeenCalledTimes(1);
-
-      // We now call the progress() handler because we inserted a workaround for
-      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
-      // Revived tasks get progress() without begin(), so we also need to pause
-      // those cases.
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      progresser!({ bytesDownloaded: 42, bytesTotal: 420 });
+      expect(task.pause).toHaveBeenCalledTimes(1);
+      expect(task.resume).not.toHaveBeenCalled();
     });
 
     it("shouldn't re-download revived spec if file already downloaded", async () => {
       const queue = new DownloadQueue();
       let doner: DoneHandler | undefined;
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string }): TaskWithHandlers => {
           return Object.assign(task, {
             id: spec.id,
@@ -1061,7 +1042,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
       (exists as jest.Mock).mockImplementation(() => true);
@@ -1070,35 +1051,35 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com/a.mp3");
 
       expect(exists).toHaveBeenCalledTimes(1);
-      expect(download).toHaveBeenCalledTimes(2); // Because it hadn't finished
+      expect(createDownloadTask).toHaveBeenCalledTimes(2); // Because it hadn't finished
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      doner!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      doner!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
       await queue.removeUrl("http://foo.com/a.mp3", 0);
       await queue.addUrl("http://foo.com/a.mp3");
 
       // Now that it's been downloaded, removing it for next launch and
       // re-adding it shouldn't retrigger a download.
-      expect(download).toHaveBeenCalledTimes(2);
+      expect(createDownloadTask).toHaveBeenCalledTimes(2);
     });
 
     it("shouldn't re-download revived spec on relaunch if file already downloaded", async () => {
       const queue = new DownloadQueue();
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return task;
       });
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
       await queue.removeUrl("http://foo.com/a.mp3");
 
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([
         {
           ...task,
           id: assignedId,
@@ -1110,7 +1091,7 @@ describe("DownloadQueue", () => {
       const relaunchQueue = new DownloadQueue();
 
       await relaunchQueue.init({ domain: "mydomain" });
-      expect(download).toHaveBeenCalledTimes(1); // Just the first time only
+      expect(createDownloadTask).toHaveBeenCalledTimes(1); // Just the first time only
     });
   });
 
@@ -1119,7 +1100,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return {
           ...task,
@@ -1147,7 +1128,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) => {
         assignedId = spec.id;
         return {
           ...task,
@@ -1180,7 +1161,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
       const idMap: { [key: string]: string } = {};
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string }) => {
           idMap[spec.url] = spec.id;
           return {
@@ -1206,10 +1187,10 @@ describe("DownloadQueue", () => {
         "DownloadQueue/mydomain/" + idMap["http://boo.com/a.mp3"],
       ]);
       expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(1);
-      expect(download).toHaveBeenCalledWith(
+      expect(createDownloadTask).toHaveBeenCalledWith(
         expect.objectContaining({ url: "http://shoo.com/a.mp3" })
       );
-      expect(download).toHaveBeenCalledTimes(4);
+      expect(createDownloadTask).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -1217,7 +1198,7 @@ describe("DownloadQueue", () => {
     it("should return status on a single file", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string }): Partial<TaskWithHandlers> =>
           spec.url === "http://boo.com/a.mp3"
             ? Object.assign(task, {
@@ -1245,7 +1226,7 @@ describe("DownloadQueue", () => {
       );
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
       const resBoo = await queue.getStatus("http://boo.com/a.mp3");
       expect(resBoo).toEqual(
         expect.objectContaining({ url: "http://boo.com/a.mp3", complete: true })
@@ -1321,7 +1302,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
       const idMap: { [url: string]: TaskWithHandlers } = {};
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string }): Partial<TaskWithHandlers> => {
           const baseTask = mock<TaskWithHandlers>();
 
@@ -1350,11 +1331,13 @@ describe("DownloadQueue", () => {
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://foo.com/a.mp3"]._done!({
+        location: "whatever",
         bytesDownloaded: 8675309,
         bytesTotal: 8675309,
       });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://boo.com/a.mp3"]._done!({
+        location: "whatever",
         bytesDownloaded: 8675309,
         bytesTotal: 8675309,
       });
@@ -1383,7 +1366,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
       const idMap: { [url: string]: TaskWithHandlers } = {};
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string }): Partial<TaskWithHandlers> => {
           const baseTask = mock<TaskWithHandlers>();
 
@@ -1411,11 +1394,13 @@ describe("DownloadQueue", () => {
       ]);
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://foo.com/a.mp3"]._done!({
+        location: "whatever",
         bytesDownloaded: 8675309,
         bytesTotal: 8675309,
       });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       idMap["http://boo.com/a.mp3"]._done!({
+        location: "whatever",
         bytesDownloaded: 8675309,
         bytesTotal: 8675309,
       });
@@ -1454,7 +1439,7 @@ describe("DownloadQueue", () => {
       const queue = new DownloadQueue();
       let assignedId = "tbd";
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string }) => {
           if (spec.url === "http://foo.com/a.mp3") {
             assignedId = spec.id;
@@ -1492,7 +1477,7 @@ describe("DownloadQueue", () => {
         "http://moo.com/a.mp3": "moo",
       };
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string }) => {
           urlsToIds[spec.url] = spec.id;
           return {
@@ -1550,7 +1535,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
 
       await queue.removeUrl("http://foo.com/a.mp3", 0);
 
@@ -1558,7 +1543,7 @@ describe("DownloadQueue", () => {
       expect(AsyncStorage.multiRemove).toHaveBeenCalledTimes(0);
 
       await queue.addUrl("http://foo.com/a.mp3");
-      expect(download).toHaveBeenCalledTimes(2);
+      expect(createDownloadTask).toHaveBeenCalledTimes(2);
     });
 
     it("should send notifications for revived lazy-deletions", async () => {
@@ -1590,7 +1575,7 @@ describe("DownloadQueue", () => {
       expect(handlers.onBegin).toHaveBeenCalledTimes(1);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
       expect(handlers.onDone).toHaveBeenCalledTimes(1);
 
       await queue.removeUrl("http://foo.com/a.mp3", 0);
@@ -1609,7 +1594,7 @@ describe("DownloadQueue", () => {
       let beginner: BeginHandler;
 
       task.state = "DOWNLOADING";
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
 
       await kvfs.write("/mydomain/foo", {
         id: "foo",
@@ -1619,53 +1604,12 @@ describe("DownloadQueue", () => {
       });
       await queue.init({ domain: "mydomain", startActive: false });
       expect(task.resume).not.toHaveBeenCalled();
-      // We expect pause TWO times because, according to downloader docs, we
-      // should explicitly pause before reattaching handlers; we then pause
-      // again because we specified !startActive.
-      expect(task.pause).toHaveBeenCalledTimes(2);
-      expect(download).not.toHaveBeenCalled();
-
-      (download as jest.Mock).mockImplementation(
-        (spec: { id: string }): TaskWithHandlers => {
-          return Object.assign(task, {
-            id: spec.id,
-            begin: (handler: BeginHandler) => {
-              beginner = handler;
-              return task;
-            },
-          });
-        }
-      );
-
-      await queue.addUrl("http://boo.com/a.mp3");
-
-      // We now call the begin() handler because we inserted a workaround for
-      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      beginner!({ expectedBytes: 42, headers: {} });
-
-      expect(task.pause).toHaveBeenCalledTimes(3); // for the added download
-    });
-
-    it("should start paused if requested on paused background task", async () => {
-      const queue = new DownloadQueue();
-      let beginner: BeginHandler;
-
-      task.state = "PAUSED";
-      (checkForExistingDownloads as jest.Mock).mockReturnValue([task]);
-
-      await kvfs.write("/mydomain/foo", {
-        id: "foo",
-        url: "http://foo.com/a.mp3",
-        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
-        createTime: Date.now() - 1000,
-      });
-      await queue.init({ domain: "mydomain", startActive: false });
-      expect(task.resume).not.toHaveBeenCalled();
+      // The revived task is DOWNLOADING while the queue is inactive, so it
+      // gets explicitly paused once upon revival.
       expect(task.pause).toHaveBeenCalledTimes(1);
-      expect(download).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string }): TaskWithHandlers => {
           return Object.assign(task, {
             id: spec.id,
@@ -1687,6 +1631,77 @@ describe("DownloadQueue", () => {
       expect(task.pause).toHaveBeenCalledTimes(2); // for the added download
     });
 
+    it("should start paused if requested on paused background task", async () => {
+      const queue = new DownloadQueue();
+      let beginner: BeginHandler;
+
+      task.state = "PAUSED";
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init({ domain: "mydomain", startActive: false });
+      expect(task.resume).not.toHaveBeenCalled();
+      // A revived PAUSED task is already paused, so revival shouldn't pause
+      // it again.
+      expect(task.pause).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
+
+      (createDownloadTask as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            begin: (handler: BeginHandler) => {
+              beginner = handler;
+              return task;
+            },
+          });
+        }
+      );
+
+      await queue.addUrl("http://boo.com/a.mp3");
+
+      // We now call the begin() handler because we inserted a workaround for
+      // https://github.com/kesha-antonov/react-native-background-downloader/issues/23
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      beginner!({ expectedBytes: 42, headers: {} });
+
+      expect(task.pause).toHaveBeenCalledTimes(1); // for the added download
+    });
+
+    it("should pause on a progress callback when inactive and no begin() fired", async () => {
+      const queue = new DownloadQueue();
+      let progresser: ProgressHandler;
+
+      (createDownloadTask as jest.Mock).mockImplementation(
+        (spec: { id: string }): TaskWithHandlers => {
+          return Object.assign(task, {
+            id: spec.id,
+            progress: (handler: ProgressHandler) => {
+              progresser = handler;
+              return task;
+            },
+          });
+        }
+      );
+
+      await queue.init({ domain: "mydomain", startActive: false });
+      await queue.addUrl("http://foo.com/a.mp3");
+
+      expect(task.pause).not.toHaveBeenCalled();
+
+      // Simulate a progress callback arriving without a preceding begin(),
+      // which can happen when resuming a background task upon launch.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      progresser!({ bytesDownloaded: 100, bytesTotal: 1000 });
+
+      expect(task.pause).toHaveBeenCalledTimes(1);
+    });
+
     it("should pause/resume everything when asked", async () => {
       const queue = new DownloadQueue();
 
@@ -1695,19 +1710,19 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://boo.com/a.mp3");
       await queue.addUrl("http://moo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(3);
+      expect(createDownloadTask).toHaveBeenCalledTimes(3);
       expect(task.resume).not.toHaveBeenCalled();
       expect(task.pause).not.toHaveBeenCalled();
 
-      queue.pauseAll();
+      await queue.pauseAll();
 
-      expect(download).toHaveBeenCalledTimes(3); // no change expected here
+      expect(createDownloadTask).toHaveBeenCalledTimes(3); // no change expected here
       expect(task.pause).toHaveBeenCalledTimes(3);
       expect(task.resume).not.toHaveBeenCalled();
 
-      queue.resumeAll();
+      await queue.resumeAll();
 
-      expect(download).toHaveBeenCalledTimes(3); // no change expected here
+      expect(createDownloadTask).toHaveBeenCalledTimes(3); // no change expected here
       expect(task.pause).toHaveBeenCalledTimes(3); // no change here either
       expect(task.resume).toHaveBeenCalledTimes(3);
     });
@@ -1789,7 +1804,7 @@ describe("DownloadQueue", () => {
       });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      queue.pauseAll();
+      await queue.pauseAll();
       expect(task.pause).toHaveBeenCalledTimes(1);
 
       netInfoHandler(createNetState(false));
@@ -1800,7 +1815,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       expect(task.pause).toHaveBeenCalledTimes(1);
 
-      queue.resumeAll();
+      await queue.resumeAll();
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(task.pause).toHaveBeenCalledTimes(1);
     });
@@ -1818,14 +1833,14 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       expect(task.pause).toHaveBeenCalledTimes(1);
 
-      queue.pauseAll();
+      await queue.pauseAll();
       expect(task.pause).toHaveBeenCalledTimes(2);
 
       netInfoHandler(createNetState(true));
       expect(task.resume).not.toHaveBeenCalled();
       expect(task.pause).toHaveBeenCalledTimes(2);
 
-      queue.resumeAll();
+      await queue.resumeAll();
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(task.pause).toHaveBeenCalledTimes(2);
     });
@@ -1841,7 +1856,7 @@ describe("DownloadQueue", () => {
         startActive: false,
       });
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string }): TaskWithHandlers => {
           return Object.assign(task, {
             id: spec.id,
@@ -1865,7 +1880,7 @@ describe("DownloadQueue", () => {
       expect(task.resume).not.toHaveBeenCalled();
       expect(task.pause).toHaveBeenCalledTimes(1); // no change!
 
-      queue.resumeAll();
+      await queue.resumeAll();
       expect(task.resume).toHaveBeenCalledTimes(1);
       expect(task.pause).toHaveBeenCalledTimes(1); // no change!
     });
@@ -1888,7 +1903,7 @@ describe("DownloadQueue", () => {
       expect(customAdder).toHaveBeenCalledTimes(1);
       expect(unsubscriber).not.toHaveBeenCalled();
 
-      queue.terminate();
+      await queue.terminate();
       expect(unsubscriber).toHaveBeenCalledTimes(1);
     });
 
@@ -1956,11 +1971,11 @@ describe("DownloadQueue", () => {
       expect(task.pause).toHaveBeenCalledTimes(1);
       expect(task.resume).not.toHaveBeenCalled();
 
-      queue.pauseAll();
+      await queue.pauseAll();
       expect(task.pause).toHaveBeenCalledTimes(2);
       expect(task.resume).not.toHaveBeenCalled();
 
-      queue.resumeAll();
+      await queue.resumeAll();
       expect(task.pause).toHaveBeenCalledTimes(2);
       expect(task.resume).not.toHaveBeenCalled();
 
@@ -2031,7 +2046,7 @@ describe("DownloadQueue", () => {
     it("should retry errored downloads", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) =>
         Object.assign(task, {
           id: spec.id,
           done: jest.fn((handler: DoneHandler) => {
@@ -2047,7 +2062,7 @@ describe("DownloadQueue", () => {
       await queue.init({ domain: "mydomain" });
       await queue.addUrl("http://foo.com/a.mp3");
 
-      expect(download).toHaveBeenCalledTimes(1);
+      expect(createDownloadTask).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -2055,14 +2070,14 @@ describe("DownloadQueue", () => {
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
       await advanceThroughNextTimersAndPromises();
-      expect(download).toHaveBeenCalledTimes(2); // Should have tried again
+      expect(createDownloadTask).toHaveBeenCalledTimes(2); // Should have tried again
 
       await advanceThroughNextTimersAndPromises();
       // Previous task should still be active, so no more download() calls
-      expect(download).toHaveBeenCalledTimes(2);
+      expect(createDownloadTask).toHaveBeenCalledTimes(2);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
       // The interval should be cleared on successful downloads
       expect(jest.getTimerCount()).toBe(0);
     });
@@ -2072,7 +2087,7 @@ describe("DownloadQueue", () => {
       const doneMap: { [id: string]: DoneHandler } = {};
       const errMap: { [id: string]: ErrorHandler } = {};
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) => {
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) => {
         // You need local copies to maintain different ids per object
         const localTask = createBasicTask();
         return Object.assign(localTask, {
@@ -2112,12 +2127,14 @@ describe("DownloadQueue", () => {
       // Now pretend to finish one successfully.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       Object.values(doneMap)[0]!({
+        location: "whatever",
         bytesDownloaded: 8675309,
         bytesTotal: 8675309,
       });
       expect(jest.getTimerCount()).toBe(1); // Still need an interval the other.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       Object.values(doneMap)[1]!({
+        location: "whatever",
         bytesDownloaded: 8675309,
         bytesTotal: 8675309,
       });
@@ -2127,7 +2144,7 @@ describe("DownloadQueue", () => {
     it("should not be retrying while paused", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) =>
         Object.assign(task, {
           id: spec.id,
           error: (handler: ErrorHandler) => {
@@ -2143,19 +2160,19 @@ describe("DownloadQueue", () => {
       task._error!({ error: "something went wrong", errorCode: 500 });
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
-      queue.pauseAll();
+      await queue.pauseAll();
       expect(jest.getTimerCount()).toBe(0);
 
-      queue.resumeAll();
+      await queue.resumeAll();
       expect(jest.getTimerCount()).toBe(1);
 
-      queue.terminate(); // Don't leave timers floating after this test
+      await queue.terminate(); // Don't leave timers floating after this test
     });
 
     it("should cancel retries when terminated", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation((spec: { id: string }) =>
+      (createDownloadTask as jest.Mock).mockImplementation((spec: { id: string }) =>
         Object.assign(task, {
           id: spec.id,
           error: (handler: ErrorHandler) => {
@@ -2171,7 +2188,7 @@ describe("DownloadQueue", () => {
       task._error!({ error: "something went wrong", errorCode: 500 });
       expect(jest.getTimerCount()).toBe(1); // The interval should be set
 
-      queue.terminate();
+      await queue.terminate();
       expect(jest.getTimerCount()).toBe(0); // The interval should be set
     });
   });
@@ -2189,7 +2206,7 @@ describe("DownloadQueue", () => {
     it("should handle a case where spec is finished but file is missing", async () => {
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation(() =>
+      (createDownloadTask as jest.Mock).mockImplementation(() =>
         Object.assign(task, {
           done: jest.fn((handler: DoneHandler) => {
             task._done = handler;
@@ -2203,7 +2220,7 @@ describe("DownloadQueue", () => {
 
       // Mark it finished... but RNFS will say the file's not there.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       const url = await queue.getAvailableUrl("http://foo.com/a.mp3");
       expect(url).toBe("http://foo.com/a.mp3");
@@ -2213,7 +2230,7 @@ describe("DownloadQueue", () => {
       Platform.OS = "android";
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation(() =>
+      (createDownloadTask as jest.Mock).mockImplementation(() =>
         Object.assign(task, {
           done: jest.fn((handler: DoneHandler) => {
             task._done = handler;
@@ -2227,7 +2244,7 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com/a.mp3");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       const statuses = await queue.getQueueStatus();
       expect(statuses).toEqual(
@@ -2246,7 +2263,7 @@ describe("DownloadQueue", () => {
       const fooTask = createBasicTask();
       let fooPath = "tbd";
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string; destination: string }) => {
           if (spec.url === "http://foo.com/a.mp3") {
             fooPath = spec.destination;
@@ -2277,7 +2294,7 @@ describe("DownloadQueue", () => {
       expect(unfinishedUrl).toBe("http://foo.com/a.mp3");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await fooTask._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await fooTask._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       const [fooU, booU] = await Promise.all([
         queue.getAvailableUrl("http://foo.com/a.mp3"),
@@ -2312,7 +2329,7 @@ describe("DownloadQueue", () => {
       const fooTask = createBasicTask();
       let fooPath = "tbd";
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string; url: string; destination: string }) => {
           if (spec.url === "http://foo.com/a.mp3") {
             fooPath = spec.destination;
@@ -2339,7 +2356,7 @@ describe("DownloadQueue", () => {
       (exists as jest.Mock).mockImplementation(path => path === fooPath);
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await fooTask._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await fooTask._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
       await queue.removeUrl("http://foo.com/a.mp3", Date.now() + 50000);
 
       const [fooU, booU] = await Promise.all([
@@ -2408,7 +2425,7 @@ describe("DownloadQueue", () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       task._progress!({ bytesDownloaded: 500, bytesTotal: 1000 });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       task._error!({ error: "foo", errorCode: 500 });
 
@@ -2426,7 +2443,7 @@ describe("DownloadQueue", () => {
 
       let doner: DoneHandler | undefined;
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string }): TaskWithHandlers => {
           return Object.assign(task, {
             id: spec.id,
@@ -2441,7 +2458,7 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http://foo.com/a.mp3");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await doner!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await doner!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       expect(handlers.onDone).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
@@ -2455,7 +2472,7 @@ describe("DownloadQueue", () => {
         onDone: jest.fn(),
       };
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string }): TaskWithHandlers => {
           return Object.assign(task, {
             id: spec.id,
@@ -2471,7 +2488,7 @@ describe("DownloadQueue", () => {
       await queue.addUrl("http:invalid.url");
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion, @typescript-eslint/await-thenable
-      await task._done!({ bytesDownloaded: 8675309, bytesTotal: 8675309 });
+      await task._done!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 });
 
       expect(handlers.onDone).toHaveBeenCalledWith(
         "http:invalid.url",
@@ -2503,7 +2520,7 @@ describe("DownloadQueue", () => {
       // careful not to crash or falsely say it's done.
       await expect(
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        doner!({ bytesDownloaded: 8675309, bytesTotal: 8675309 })
+        doner!({ location: "whatever", bytesDownloaded: 8675309, bytesTotal: 8675309 })
       ).resolves.not.toThrow();
       expect(handlers.onDone).not.toHaveBeenCalled();
     });
@@ -2516,7 +2533,7 @@ describe("DownloadQueue", () => {
       };
       const queue = new DownloadQueue();
 
-      (download as jest.Mock).mockImplementation(
+      (createDownloadTask as jest.Mock).mockImplementation(
         (spec: { id: string }): TaskWithHandlers => {
           return Object.assign(task, {
             id: spec.id,
