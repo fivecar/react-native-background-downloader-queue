@@ -89,7 +89,7 @@ Here are the optional notification handlers you can pass to be informed of downl
 |`onWillRemove?: (url: string) => Promise<void>`| Called before any url is removed from the queue. This is async because `removeUrl` (and also `setQueue`, when it needs to remove some urls) will block until you return from this, giving you the opportunity remove any dependencies on any downloaded local file before it's deleted.|
 |`onError?: (url: string, error: any) => void`| Called when there's been an issue downloading the file. Note that this is mostly for you to communicate something to the user, or to do other housekeeping; DownloadQueue will automatically re-attempt the download every minute (while you're online) until it succeeds.|
 
-### `terminate(): void`
+### `async terminate(): Promise<void>`
 
 Terminates all pending downloads and stops all activity, including
 processing lazy-deletes. You can re-init() if you'd like -- but in most cases where you plan to re-init, `pause()` might be what you really meant.
@@ -120,11 +120,11 @@ Returns a `DownloadQueueStatus` object reflecting the status of a url's download
 
 Returns the status of all urls in the queue, excluding urls marked for lazy deletion.
 
-### `pauseAll(): void`
+### `async pauseAll(): Promise<void>`
 
 Pauses all active downloads. Note that if you just want to download on certain types of connections, you should instead use `activeNetworkTypes` in `init()`. For instance, to avoid cellular data charges, you might pass `activeNetworkTypes: ["wifi", "ethernet"]`.
 
-### `resumeAll(): void`
+### `async resumeAll(): Promise<void>`
 
 Resumes all active downloads that were previously paused. If you `init()` with `startActive === false`, you'll want to call this at some point or else downloads will never happen. Also, downloads will only proceed if the network connection type passes the `activeNetworkTypes` filter (which by default allows all connection types).
 

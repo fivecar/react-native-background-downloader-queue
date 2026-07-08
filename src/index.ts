@@ -1,10 +1,9 @@
 import {
-  checkForExistingDownloads,
   completeHandler,
-  download,
+  createDownloadTask,
   DownloadTask,
-  ensureDownloadsAreRunning,
-} from "@kesha-antonov/react-native-background-downloader";
+  getExistingDownloadTasks,
+} from "@fivecar/react-native-background-downloader";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import KeyValueFileSystem from "key-value-file-system";
 import { Platform } from "react-native";
@@ -229,7 +228,7 @@ export default class DownloadQueue {
 
     const [specData, existingTasks, dirFilenames] = await Promise.all([
       this.kvfs.readMulti<Spec>(`${this.keyFromId("")}*`),
-      checkForExistingDownloads(),
+      getExistingDownloadTasks(),
       this.getDirFilenames(),
     ]);
     const now = Date.now();
@@ -269,14 +268,6 @@ export default class DownloadQueue {
     // First revive tasks that were working in the background
     if (existingTasks.length > 0) {
       await Promise.all(existingTasks.map(task => this.reviveTask(task)));
-      await ensureDownloadsAreRunning();
-      if (!this.active) {
-        // ensureDownloadsAreRunning forces all un-stopped downloads to start.
-        // So we'll need to stop them again if !active.
-        existingTasks
-          .filter(task => task.state === "DOWNLOADING")
-          .forEach(task => void task.pause());
-      }
     }
 
     // Now start downloads for specs that haven't finished
@@ -351,10 +342,12 @@ export default class DownloadQueue {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       const state = await this.netInfoFetchState!();
 
-      this.onNetInfoChanged(state);
+      await this.onNetInfoChanged(state);
       this.netInfoUnsubscriber = netInfoAddEventListener(
         (state: DownloadQueueNetInfoState) => {
-          this.onNetInfoChanged(state);
+          // The caller's listener signature is synchronous (it comes from
+          // NetInfo.addEventListener), so we can't await this here.
+          void this.onNetInfoChanged(state);
         }
       );
     }
@@ -367,9 +360,9 @@ export default class DownloadQueue {
    * processing lazy-deletes. You can re-init() if you'd like -- but in most
    * cases where you plan to re-init, pause() might be what you really meant.
    */
-  terminate(): void {
+  async terminate(): Promise<void> {
     this.active = false;
-    this.tasks.forEach(task => void task.stop());
+    await Promise.all(this.tasks.map(task => task.stop()));
     this.tasks = [];
     this.specs = [];
     this.handlers = undefined;
@@ -472,7 +465,7 @@ export default class DownloadQueue {
 
     const task = this.removeTask(spec.id);
     if (task) {
-      task.stop();
+      await task.stop();
     }
 
     // If it's a lazy delete, just update the spec but don't mess with files.
@@ -589,16 +582,16 @@ export default class DownloadQueue {
    * Pauses all active downloads. Most used to implement wifi-only downloads,
    * by pausing when NetInfo reports a non-wifi connection.
    */
-  pauseAll(): void {
+  async pauseAll(): Promise<void> {
     this.verifyInitialized();
 
     this.isPausedByUser = true;
-    this.pauseAllInternal();
+    await this.pauseAllInternal();
   }
 
-  private pauseAllInternal(): void {
+  private async pauseAllInternal(): Promise<void> {
     this.active = false;
-    this.tasks.forEach(task => void task.pause());
+    await Promise.all(this.tasks.map(task => task.pause()));
 
     if (this.errorTimer) {
       clearInterval(this.errorTimer);
@@ -613,20 +606,20 @@ export default class DownloadQueue {
    * network connection type passes the `activeNetworkTypes` filter (which by
    * default allows all connection types).
    */
-  resumeAll(): void {
+  async resumeAll(): Promise<void> {
     this.verifyInitialized();
 
     this.isPausedByUser = false;
     if (!this.wouldAutoPause) {
       // We only resume downloads if we weren't told otherwise to auto-pause
       // based on network conditions.
-      this.resumeAllInternal();
+      await this.resumeAllInternal();
     }
   }
 
-  private resumeAllInternal() {
+  private async resumeAllInternal(): Promise<void> {
     this.active = true;
-    this.tasks.forEach(task => void task.resume());
+    await Promise.all(this.tasks.map(task => task.resume()));
 
     if (this.erroredIds.size > 0) {
       this.ensureErrorTimerOn();
@@ -684,13 +677,14 @@ export default class DownloadQueue {
       void this.kvfs.write(this.keyFromId(spec.id), spec);
     }
 
-    const task = download({
+    const task = createDownloadTask({
       id: spec.id,
       url: spec.url,
       destination: spec.path,
     });
 
     this.addTask(spec.url, task);
+    task.start();
 
     // Bug: https://github.com/kesha-antonov/react-native-background-downloader/issues/23
     // This is the ideal place to pause, but the downloader has a bug that
@@ -720,7 +714,7 @@ export default class DownloadQueue {
     this.activeNetworkTypes = types;
     if (this.netInfoFetchState) {
       const state = await this.netInfoFetchState();
-      this.onNetInfoChanged(state);
+      await this.onNetInfoChanged(state);
     } else {
       throw new Error(
         "Can't `setActiveNetworkType` without having init'd with `netInfoFetchState`"
@@ -743,7 +737,7 @@ export default class DownloadQueue {
         // download sends us this begin() callback. When #23 is fixed, we can
         // in theory move this into the end of start(), after download().
         if (!this.active) {
-          task.pause();
+          void task.pause();
         }
         this.handlers?.onBegin?.(url, data.expectedBytes);
       })
@@ -757,7 +751,7 @@ export default class DownloadQueue {
         // See note in begin() above. We can get progress callbacks even without
         // begin() (e.g. in the case of resuming a background task upon launch).
         if (!this.active) {
-          task.pause();
+          void task.pause();
         }
         const fraction = bytesDownloaded / bytesTotal;
         this.handlers?.onProgress?.(url, fraction, bytesDownloaded, bytesTotal);
@@ -790,7 +784,7 @@ export default class DownloadQueue {
     await this.kvfs.write(this.keyFromId(spec.id), spec);
 
     if (Platform.OS === "ios") {
-      completeHandler(task.id);
+      void completeHandler(task.id);
     }
 
     // Only notify the client once everything has completed successfully and
@@ -857,7 +851,9 @@ export default class DownloadQueue {
     this.specs = this.specs.filter(spec => !delIds.has(spec.id));
   }
 
-  private onNetInfoChanged(state: DownloadQueueNetInfoState) {
+  private async onNetInfoChanged(
+    state: DownloadQueueNetInfoState
+  ): Promise<void> {
     const shouldAutoPause =
       !state.isConnected ||
       (this.activeNetworkTypes.length > 0 &&
@@ -872,9 +868,9 @@ export default class DownloadQueue {
     // asked us to pause. If they have, we leave their wishes alone.
     if (!this.isPausedByUser) {
       if (shouldAutoPause) {
-        this.pauseAllInternal();
+        await this.pauseAllInternal();
       } else {
-        this.resumeAllInternal();
+        await this.resumeAllInternal();
       }
     }
   }
@@ -916,7 +912,7 @@ export default class DownloadQueue {
               // that we begin the download again.
               // Downloader docs say every task needs to be paused or stopped.
               // So we stop here.
-              task.stop();
+              await task.stop();
               // Since the file is missing from disk, yet the downloader thinks
               // it's done, we restart the download.
               this.start(spec);
@@ -940,18 +936,18 @@ export default class DownloadQueue {
       }
 
       if (shouldAddTask) {
-        // Downloader docs say to pause tasks before reattaching our handlers
-        task.pause();
         this.addTask(spec.url, task);
+        if (!this.active && task.state === "DOWNLOADING") {
+          await task.pause();
+        }
       } else {
-        // According to downloader docs, we must either stop or pause revived
-        // tasks because ensureTasksRunning() will unpause any download we
-        // didn't explicitly stop (!)
-        task.stop();
+        await task.stop();
       }
     } else {
       if (this.isTaskDownloading(task)) {
-        task.stop();
+        // Await this so the unlink() below (for lazy-delete revivals) can't
+        // race a native write that's still in flight.
+        await task.stop();
       }
 
       if (!spec) {
