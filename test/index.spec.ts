@@ -376,7 +376,7 @@ describe("DownloadQueue", () => {
       expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
-    it("revives paused specs from previous launches", async () => {
+    it("resumes revived paused specs when the queue is active", async () => {
       const queue = new DownloadQueue();
       const handlers: DownloadQueueHandlers = {
         onBegin: jest.fn(),
@@ -394,13 +394,79 @@ describe("DownloadQueue", () => {
       });
       await queue.init({ domain: "mydomain", handlers });
 
-      // PAUSED tasks are left alone (not auto-resumed) upon revival.
+      // Since the queue is active, a revived PAUSED task must be resumed --
+      // otherwise it would stay paused forever.
+      expect(task.resume).toHaveBeenCalled();
       expect(task.pause).not.toHaveBeenCalled();
-      expect(task.resume).not.toHaveBeenCalled();
       expect(handlers.onBegin).toHaveBeenCalledWith(
         "http://foo.com/a.mp3",
         task.bytesTotal
       );
+      expect(createDownloadTask).not.toHaveBeenCalled();
+    });
+
+    it("leaves revived paused specs paused when init'd inactive", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+      };
+
+      task.state = "PAUSED";
+      task.bytesTotal = 8675309;
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init({ domain: "mydomain", handlers, startActive: false });
+
+      // When init'd inactive, a revived PAUSED task is already paused and must
+      // be left alone.
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(task.pause).not.toHaveBeenCalled();
+      expect(handlers.onBegin).toHaveBeenCalledWith(
+        "http://foo.com/a.mp3",
+        task.bytesTotal
+      );
+      expect(createDownloadTask).not.toHaveBeenCalled();
+    });
+
+    it("doesn't resume revived paused specs when the network forbids downloads", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+      };
+
+      task.state = "PAUSED";
+      task.bytesTotal = 8675309;
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
+
+      // We're on cellular, but the queue is wifi-only. init() must evaluate the
+      // network gate before reviving tasks, so a revived PAUSED task is not
+      // resumed onto metered data.
+      (fetch as jest.Mock).mockResolvedValueOnce({
+        isConnected: true,
+        type: "cellular",
+      });
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init({
+        domain: "mydomain",
+        handlers,
+        activeNetworkTypes: ["wifi"],
+        netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
+      });
+
+      expect(task.resume).not.toHaveBeenCalled();
       expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
@@ -985,10 +1051,10 @@ describe("DownloadQueue", () => {
 
       await relaunchQueue.init({ domain: "mydomain" });
       // Revival should reattach to the existing task rather than starting a
-      // new download, and shouldn't touch pause/resume for an already-paused
-      // task.
+      // new download. Since the relaunched queue is active, a revived PAUSED
+      // task is resumed so it doesn't stay stuck.
       expect(createDownloadTask).toHaveBeenCalledTimes(1);
-      expect(task.resume).not.toHaveBeenCalled();
+      expect(task.resume).toHaveBeenCalled();
     });
 
     it("should pause revived url when relaunched inactive", async () => {
@@ -2433,6 +2499,41 @@ describe("DownloadQueue", () => {
       expect(handlers.onProgress).toHaveBeenCalledTimes(1);
       expect(handlers.onDone).toHaveBeenCalledTimes(1);
       expect(handlers.onError).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports fraction 0 when total size is unknown", async () => {
+      const handlers: DownloadQueueHandlers = {
+        onProgress: jest.fn(),
+      };
+      const queue = new DownloadQueue();
+
+      Object.assign(task, {
+        id: "foo",
+        begin: jest.fn(handler => {
+          task._begin = handler;
+          return task;
+        }),
+        progress: jest.fn(handler => {
+          task._progress = handler;
+          return task;
+        }),
+      });
+
+      await queue.init({ domain: "mydomain", handlers });
+      await queue.addUrl("http://foo.com/a.mp3");
+
+      // The downloader reports bytesTotal === -1 when Content-Length is unknown.
+      // We must not divide by it, which would yield a negative fraction.
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      task._progress!({ bytesDownloaded: 420, bytesTotal: -1 });
+
+      expect(handlers.onProgress).toHaveBeenCalledTimes(1);
+      expect(handlers.onProgress).toHaveBeenCalledWith(
+        "http://foo.com/a.mp3",
+        0,
+        420,
+        -1
+      );
     });
 
     it("should call done handler with local path when finished", async () => {
