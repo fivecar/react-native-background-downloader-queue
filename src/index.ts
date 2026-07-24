@@ -69,6 +69,10 @@ export interface DownloadQueueStatus {
 
 export interface DownloadQueueHandlers {
   onBegin?: (url: string, totalBytes: number) => void;
+  /**
+   * `fractionWritten` is 0 when the total size is unknown (e.g. the server
+   * didn't send a Content-Length, in which case `totalBytes` is -1 or 0).
+   */
   onProgress?: (
     url: string,
     fractionWritten: number,
@@ -753,7 +757,10 @@ export default class DownloadQueue {
         if (!this.active) {
           void task.pause();
         }
-        const fraction = bytesDownloaded / bytesTotal;
+        // bytesTotal can be -1 (unknown Content-Length) or 0, in which case we
+        // can't compute a meaningful fraction. Report 0 rather than a negative
+        // or NaN value, while still passing the raw byte counts through.
+        const fraction = bytesTotal > 0 ? bytesDownloaded / bytesTotal : 0;
         this.handlers?.onProgress?.(url, fraction, bytesDownloaded, bytesTotal);
       })
       // eslint-disable-next-line @typescript-eslint/no-misused-promises
@@ -939,6 +946,11 @@ export default class DownloadQueue {
         this.addTask(spec.url, task);
         if (!this.active && task.state === "DOWNLOADING") {
           await task.pause();
+        } else if (this.active && task.state === "PAUSED") {
+          // A revived task can come back PAUSED (e.g. paused by the OS while
+          // backgrounded). If the queue is active, resume it so it doesn't
+          // stay paused forever -- nothing else in init will restart it.
+          await task.resume();
         }
       } else {
         await task.stop();
