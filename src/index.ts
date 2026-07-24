@@ -269,6 +269,42 @@ export default class DownloadQueue {
     this.active = startActive;
     this.isPausedByUser = !startActive;
 
+    // Evaluate the network gate before reviving tasks or starting downloads. If
+    // the current connection isn't allowed (e.g. wifi-only while on cellular),
+    // onNetInfoChanged() calls pauseAllInternal(), which flips this.active off.
+    // That way revivals don't resume PAUSED tasks and fresh starts get paused
+    // in begin() -- so nothing briefly downloads on a forbidden network.
+    this.wouldAutoPause = false;
+
+    if (
+      activeNetworkTypes.length > 0 &&
+      (!netInfoAddEventListener || !netInfoFetchState)
+    ) {
+      throw new Error(
+        "If you pass `activeNetworkTypes`, you must also pass both `netInfoAddEventListener` and `netInfoFetchState`"
+      );
+    }
+    if (netInfoAddEventListener && !netInfoFetchState) {
+      throw new Error(
+        "If you pass `netInfoAddEventListener`, you must also pass `netInfoFetchState`"
+      );
+    }
+    this.activeNetworkTypes = activeNetworkTypes;
+    this.netInfoFetchState = netInfoFetchState;
+    if (netInfoAddEventListener) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const state = await this.netInfoFetchState!();
+
+      await this.onNetInfoChanged(state);
+      this.netInfoUnsubscriber = netInfoAddEventListener(
+        (state: DownloadQueueNetInfoState) => {
+          // The caller's listener signature is synchronous (it comes from
+          // NetInfo.addEventListener), so we can't await this here.
+          void this.onNetInfoChanged(state);
+        }
+      );
+    }
+
     // First revive tasks that were working in the background
     if (existingTasks.length > 0) {
       await Promise.all(existingTasks.map(task => this.reviveTask(task)));
@@ -324,37 +360,6 @@ export default class DownloadQueue {
       this.specs.filter(spec => -spec.createTime > now),
       now
     );
-
-    this.wouldAutoPause = false;
-
-    if (
-      activeNetworkTypes.length > 0 &&
-      (!netInfoAddEventListener || !netInfoFetchState)
-    ) {
-      throw new Error(
-        "If you pass `activeNetworkTypes`, you must also pass both `netInfoAddEventListener` and `netInfoFetchState`"
-      );
-    }
-    if (netInfoAddEventListener && !netInfoFetchState) {
-      throw new Error(
-        "If you pass `netInfoAddEventListener`, you must also pass `netInfoFetchState`"
-      );
-    }
-    this.activeNetworkTypes = activeNetworkTypes;
-    this.netInfoFetchState = netInfoFetchState;
-    if (netInfoAddEventListener) {
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      const state = await this.netInfoFetchState!();
-
-      await this.onNetInfoChanged(state);
-      this.netInfoUnsubscriber = netInfoAddEventListener(
-        (state: DownloadQueueNetInfoState) => {
-          // The caller's listener signature is synchronous (it comes from
-          // NetInfo.addEventListener), so we can't await this here.
-          void this.onNetInfoChanged(state);
-        }
-      );
-    }
 
     this.inited = true;
   }

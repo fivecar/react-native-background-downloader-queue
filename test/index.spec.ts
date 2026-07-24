@@ -434,6 +434,42 @@ describe("DownloadQueue", () => {
       expect(createDownloadTask).not.toHaveBeenCalled();
     });
 
+    it("doesn't resume revived paused specs when the network forbids downloads", async () => {
+      const queue = new DownloadQueue();
+      const handlers: DownloadQueueHandlers = {
+        onBegin: jest.fn(),
+      };
+
+      task.state = "PAUSED";
+      task.bytesTotal = 8675309;
+      (getExistingDownloadTasks as jest.Mock).mockReturnValue([task]);
+
+      // We're on cellular, but the queue is wifi-only. init() must evaluate the
+      // network gate before reviving tasks, so a revived PAUSED task is not
+      // resumed onto metered data.
+      (fetch as jest.Mock).mockResolvedValueOnce({
+        isConnected: true,
+        type: "cellular",
+      });
+
+      await kvfs.write("/mydomain/foo", {
+        id: "foo",
+        url: "http://foo.com/a.mp3",
+        path: `${RNFS.DocumentDirectoryPath}/DownloadQueue/mydomain/foo`,
+        createTime: Date.now() - 1000,
+      });
+      await queue.init({
+        domain: "mydomain",
+        handlers,
+        activeNetworkTypes: ["wifi"],
+        netInfoAddEventListener: addEventListener,
+        netInfoFetchState: fetch,
+      });
+
+      expect(task.resume).not.toHaveBeenCalled();
+      expect(createDownloadTask).not.toHaveBeenCalled();
+    });
+
     it("revives done specs from previous launches", async () => {
       const queue = new DownloadQueue();
       const handlers: DownloadQueueHandlers = {
